@@ -17,7 +17,7 @@ import {
   getLeagueStandings,
   getWorldPowerRanking,
 } from './data/worldLeagues'
-import { CHAMPIONS_DB } from './data'
+import { CHAMPIONS_DB, NO_LUCK_COMBOS } from './data'
 import { LEC_PLAYERS, LFL_PLAYERS } from './data/proPlayers'
 import TrainingView from './components/TrainingView'
 import MatchMap from './components/MatchMap'
@@ -231,6 +231,66 @@ const COUNTER_TAG_RULES = {
   assassin: ['Tank', 'Control', 'Peel'],
   skirmisher: ['Tank', 'Control'],
   teamfight: ['Splitpush', 'Poke'],
+}
+
+// Role weights per game phase: higher = more impact on team power during that phase.
+// Early: Jungle/Top lead (ganks, prio), ADC minimal. Late: ADC/Mid carry, Jungle still useful.
+const ROLE_PHASE_WEIGHTS = {
+  early: { Top: 0.22, Jungle: 0.26, Mid: 0.22, ADC: 0.16, Support: 0.14 },
+  mid: { Top: 0.18, Jungle: 0.22, Mid: 0.22, ADC: 0.20, Support: 0.18 },
+  late: { Top: 0.14, Jungle: 0.18, Mid: 0.22, ADC: 0.28, Support: 0.18 },
+}
+
+const SEASON_START_BUDGET = 5_200_000
+const DEFAULT_PLAYER_SALARY = 22_000
+const PRIZE_MONEY_BY_STAGE = {
+  'LEC Versus': { win: 15000, loss: 4000 },
+  Printemps: { win: 45000, loss: 12000 },
+  Ete: { win: 60000, loss: 15000 },
+  Regulier: { win: 22000, loss: 6000 },
+  Playoffs: { win: 90000, loss: 25000 },
+}
+
+const SPONSOR_CONTRACTS = [
+  {
+    id: 'riot-partner',
+    label: 'Riot Games Partner',
+    monthly: 85_000,
+    target: { type: 'winrate', value: 55, bonus: 60_000 },
+  },
+  {
+    id: 'redbull',
+    label: 'Red Bull Energy',
+    monthly: 45_000,
+    target: { type: 'top_finish', value: 4, bonus: 90_000 },
+  },
+  {
+    id: 'logitech',
+    label: 'Logitech G',
+    monthly: 38_000,
+    target: { type: 'winrate', value: 50, bonus: 30_000 },
+  },
+  {
+    id: 'secretlab',
+    label: 'Secretlab Pro',
+    monthly: 22_000,
+    target: { type: 'winrate', value: 45, bonus: 15_000 },
+  },
+]
+
+const BOARD_OBJECTIVES = [
+  { id: 'spring-top4', label: 'Top 4 au Split Printemps', stage: 'Printemps', minRank: 4, reward: 120_000 },
+  { id: 'summer-top2', label: 'Top 2 au Split Ete', stage: 'Ete', minRank: 2, reward: 220_000 },
+  { id: 'no-bot3', label: 'Eviter le Bottom 3', minWinrate: 42, reward: 40_000 },
+]
+
+const META_PATCH_ARCHETYPES = ['Tank', 'Assassin', 'Marksman', 'Mage', 'Enchanter', 'Juggernaut', 'Skirmisher', 'Engage']
+const POTENTIAL_BAND = {
+  // Potential cap relative to mental stat. Stars cap higher.
+  elite: 98,
+  high: 92,
+  mid: 86,
+  low: 80,
 }
 
 function isFragileChampion(champion) {
@@ -1357,12 +1417,28 @@ function buildInitialRosterProfiles(players) {
     const seed = PLAYER_PROFILE_SEED[player.joueur] ?? {}
     const profileKey = player.playerId ?? player.joueur
     const fallbackAge = 19 + (stableHash(profileKey) % 8)
+    const actualAge = seed.age ?? fallbackAge
     const fallbackCondition = clamp(58 + (stableHash(`${profileKey}-condition`) % 28), 45, 90)
+
+    // Hidden potential stat (roll based on age: younger players have more headroom)
+    const potentialSeed = stableHash(`${profileKey}-potential`)
+    const baseRoll = potentialSeed % 100
+    // Under-21 prospects: 20% chance elite, 40% high
+    // 21-24 pros: 5% chance elite, 35% high
+    // 25+: mostly capped high or mid
+    let potential
+    if (actualAge <= 20) {
+      potential = baseRoll < 20 ? POTENTIAL_BAND.elite : baseRoll < 60 ? POTENTIAL_BAND.high : POTENTIAL_BAND.mid
+    } else if (actualAge <= 24) {
+      potential = baseRoll < 5 ? POTENTIAL_BAND.elite : baseRoll < 40 ? POTENTIAL_BAND.high : POTENTIAL_BAND.mid
+    } else {
+      potential = baseRoll < 35 ? POTENTIAL_BAND.high : baseRoll < 70 ? POTENTIAL_BAND.mid : POTENTIAL_BAND.low
+    }
 
     acc[profileKey] = {
       pseudo: seed.pseudo ?? player.joueur.toUpperCase(),
       realName: player.realName ?? player.joueur,
-      age: seed.age ?? fallbackAge,
+      age: actualAge,
       nationality: player.nationality ?? seed.nationality ?? 'France',
       marketValue: player.marketValue ? formatEuroValue(player.marketValue) : seed.marketValue ?? '€350K',
       moral: player.moral,
@@ -1375,12 +1451,65 @@ function buildInitialRosterProfiles(players) {
       visionBonus: 0,
       draftBonus: 0,
       synergyBonus: 0,
+      potential,
+      currentAbility: clamp((player.laning + player.teamfight + player.macro + player.mechanics) / 4, 40, 99),
       matchHistory: seed.matchHistory ?? ['V', 'D', 'V', 'V'],
       championMastery: buildInitialMasteryMap(profileKey, player.role, player.signatureChampions ?? []),
     }
 
     return acc
   }, {})
+}
+
+function buildTransferMarketFromPool(activeTeamId, size = 8) {
+  const pool = PRO_PLAYERS.filter((player) => player.team_id !== activeTeamId)
+  if (!pool.length) return []
+
+  const shuffled = pool
+    .map((player) => ({ player, sortKey: stableHash(`market-${player.id}`) }))
+    .sort((a, b) => a.sortKey - b.sortKey)
+    .map((entry) => entry.player)
+    .slice(0, size)
+
+  return shuffled.map((player) => {
+    const age = player.age ?? 21
+    // PRO_PLAYERS stats are FM-scale (1-20), averaging ~14 for a pro
+    const mainStat = (player.stats.laning + player.stats.teamfight + player.stats.mechanics + player.stats.macro) / 4
+    const askingPrice = Math.round(
+      (player.value ?? 500_000) * 1.15 + Math.max(0, (mainStat - 14)) * 80_000,
+    )
+
+    const potentialSeed = stableHash(`market-pot-${player.id}`) % 100
+    let potential
+    if (age <= 20) {
+      potential = potentialSeed < 25 ? POTENTIAL_BAND.elite : potentialSeed < 65 ? POTENTIAL_BAND.high : POTENTIAL_BAND.mid
+    } else if (age <= 24) {
+      potential = potentialSeed < 8 ? POTENTIAL_BAND.elite : potentialSeed < 45 ? POTENTIAL_BAND.high : POTENTIAL_BAND.mid
+    } else {
+      potential = potentialSeed < 30 ? POTENTIAL_BAND.high : POTENTIAL_BAND.mid
+    }
+
+    return {
+      id: player.id,
+      pseudo: player.pseudo,
+      realName: player.real_name,
+      role: player.role,
+      league: player.league ?? player.league_id,
+      source: player.team_id,
+      age,
+      stats: player.stats,
+      statsPreview: {
+        laning: player.stats.laning,
+        teamfight: player.stats.teamfight,
+        mechanics: player.stats.mechanics,
+      },
+      signatureChampions: player.signature_champions ?? [],
+      askingPrice: Math.max(200_000, askingPrice),
+      potential,
+      revealedPotential: null,
+      signed: false,
+    }
+  })
 }
 
 function moraleFromCondition(condition) {
@@ -2016,42 +2145,163 @@ function computeDraftNoLuckScore({
   }
 }
 
+function evaluateNoLuckTeamCombos(draftState) {
+  const pickedIds = Object.values(draftState?.playerPicks ?? {})
+    .map((key) => getChampionByKey(key)?.id)
+    .filter(Boolean)
+  if (!pickedIds.length) {
+    return { activeCombos: [], bonusMacro: 0, bonusSurvive: 0 }
+  }
+
+  const normalize = (value) => String(value).toLowerCase().replace(/[^a-z0-9]/g, '')
+  const normalizedSet = new Set(pickedIds.map(normalize))
+  const activeCombos = (NO_LUCK_COMBOS ?? []).filter((combo) =>
+    combo.requirements.every((req) => normalizedSet.has(normalize(req))),
+  )
+
+  let bonusMacro = 0
+  let bonusSurvive = 0
+  activeCombos.forEach((combo) => {
+    if (combo.bonus.stat === 'macro') {
+      bonusMacro += combo.bonus.value
+    } else if (combo.bonus.stat === 'group_survivability') {
+      bonusSurvive += combo.bonus.value
+    }
+  })
+
+  return { activeCombos, bonusMacro, bonusSurvive }
+}
+
+function getRoleSpecificBonus(player, champion, phaseId) {
+  if (!player || !champion) {
+    return 0
+  }
+
+  if (player.role === 'Jungle' && champion.jungleStats) {
+    const clear = Number(champion.jungleStats.ClearSpeed ?? 5)
+    const gank = Number(champion.jungleStats.GankPressure ?? 5)
+    const obj = Number(champion.jungleStats.ObjectiveControl ?? 5)
+    if (phaseId === 'early') return (clear * 0.7 + gank * 0.9) - 8
+    if (phaseId === 'mid') return (gank * 0.6 + obj * 0.8) - 7
+    return (obj * 0.9 + clear * 0.3) - 6
+  }
+
+  if (player.role === 'Mid' && champion.midlaneStats) {
+    const roam = Number(champion.midlaneStats.RoamPotential ?? 5)
+    const prio = Number(champion.midlaneStats.LanePriority ?? 5)
+    const mana = Number(champion.midlaneStats.ManaManagement ?? champion.midlaneStats.EnergyManagement ?? 5)
+    if (phaseId === 'early') return (prio * 0.9 + mana * 0.4) - 6.5
+    if (phaseId === 'mid') return (roam * 0.8 + prio * 0.5) - 6.5
+    return (roam * 0.6 + prio * 0.4) - 5
+  }
+
+  return 0
+}
+
+function computeCarryCeiling(players, role, stat) {
+  const rolePlayers = players.filter((player) => player.role === role)
+  if (!rolePlayers.length) {
+    return 0
+  }
+  return rolePlayers[0][stat] ?? 0
+}
+
+function computeMetaPatchPickBonus(pickKey, metaPatchInfluence) {
+  if (!pickKey || !metaPatchInfluence) return 0
+  const normalized = String(pickKey).toLowerCase().replace(/[^a-z0-9]/g, '')
+  const boosted = (metaPatchInfluence.boostedChampions ?? []).map((id) =>
+    String(id).toLowerCase().replace(/[^a-z0-9]/g, ''),
+  )
+  const nerfed = (metaPatchInfluence.nerfedChampions ?? []).map((id) =>
+    String(id).toLowerCase().replace(/[^a-z0-9]/g, ''),
+  )
+  if (boosted.includes(normalized)) return 6
+  if (nerfed.includes(normalized)) return -6
+  return 0
+}
+
 function computePhaseNoLuckBattle({
   matchId,
   roster,
   opponentRoster,
   approachId,
   draftScore,
+  draftState,
   draftPunishmentProfile,
   aggressivite,
   rythmeJeu,
   prioriteObjectifs,
+  gameIndex = 0,
+  metaPatchInfluence = null,
+  sideEarlyBoost = 0,
 }) {
   const phases = [
-    { id: 'early', label: 'Early', startMinute: 0, endMinute: 15, laneWeight: 0.56, macroWeight: 0.2, tfWeight: 0.24 },
-    { id: 'mid', label: 'Mid', startMinute: 15, endMinute: 25, laneWeight: 0.28, macroWeight: 0.36, tfWeight: 0.36 },
-    { id: 'late', label: 'Late', startMinute: 25, endMinute: 30, laneWeight: 0.14, macroWeight: 0.38, tfWeight: 0.48 },
+    { id: 'early', label: 'Early', startMinute: 0, endMinute: 15, laneWeight: 0.58, macroWeight: 0.18, tfWeight: 0.24 },
+    { id: 'mid', label: 'Mid', startMinute: 15, endMinute: 25, laneWeight: 0.26, macroWeight: 0.36, tfWeight: 0.38 },
+    { id: 'late', label: 'Late', startMinute: 25, endMinute: 30, laneWeight: 0.12, macroWeight: 0.36, tfWeight: 0.52 },
   ]
 
   const approach = getMatchApproachById(approachId)
   const safeOpponentRoster = opponentRoster?.length ? opponentRoster : []
   const rolePenaltyByRole = draftPunishmentProfile?.byRole ?? {}
   const averageDraftPenalty = draftPunishmentProfile?.averagePenalty ?? 0
+  const combos = evaluateNoLuckTeamCombos(draftState)
+  const comboMacroBoost = combos.bonusMacro * 18
+  const comboSurviveBoost = combos.bonusSurvive * 14
 
   const computeTeamPower = (players, phase) => {
     if (!players.length) {
       return 72
     }
 
-    const total = players.reduce((sum, player) => {
+    const phaseRoleWeights = ROLE_PHASE_WEIGHTS[phase.id] ?? {}
+    let total = 0
+
+    players.forEach((player) => {
       const rolePenalty = rolePenaltyByRole[player.role]
       const statMultiplier = rolePenalty?.multiplier ?? 1
-      const laneValue = player.laning * statMultiplier
-      const macroValue = player.macro * statMultiplier
-      const tfValue = player.teamfight * statMultiplier
-      const base = (laneValue * phase.laneWeight) + (macroValue * phase.macroWeight) + (tfValue * phase.tfWeight)
-      return sum + base
-    }, 0)
+      const roleWeight = phaseRoleWeights[player.role] ?? 0.2
+      const laneValue = (player.laning ?? 70) * statMultiplier
+      const macroValue = (player.macro ?? 70) * statMultiplier
+      const tfValue = (player.teamfight ?? 70) * statMultiplier
+      const mechValue = (player.mechanics ?? 70) * statMultiplier
+      const mentalFactor = ((player.mental ?? 14) - 12) * 0.8
+      const base =
+        (laneValue * phase.laneWeight) +
+        (macroValue * phase.macroWeight) +
+        (tfValue * phase.tfWeight) +
+        (mechValue * 0.08) +
+        mentalFactor
+      total += base * (roleWeight * 5)
+
+      // role-specific champion bonus from jungle/mid pathing stats
+      const pickKey = draftState?.playerPicks?.[player.role]
+      const champion = getChampionByKey(pickKey)
+      total += getRoleSpecificBonus(player, champion, phase.id)
+
+      // Meta patch influence: picks in boosted archetype gain bonus, nerfed lose
+      total += computeMetaPatchPickBonus(pickKey, metaPatchInfluence)
+    })
+
+    // Carry ceiling bonus: best Mid/ADC late game pulls the average up
+    if (phase.id === 'late') {
+      const adcMech = computeCarryCeiling(players, 'ADC', 'mechanics')
+      const midMech = computeCarryCeiling(players, 'Mid', 'mechanics')
+      total += Math.max(0, (adcMech - 70) * 0.7) + Math.max(0, (midMech - 70) * 0.5)
+    } else if (phase.id === 'early') {
+      const jgMech = computeCarryCeiling(players, 'Jungle', 'mechanics')
+      const topLane = computeCarryCeiling(players, 'Top', 'laning')
+      total += Math.max(0, (jgMech - 70) * 0.5) + Math.max(0, (topLane - 70) * 0.4)
+    }
+
+    // Combo bonuses scale with phase
+    if (phase.id === 'late') {
+      total += comboMacroBoost + comboSurviveBoost * 1.2
+    } else if (phase.id === 'mid') {
+      total += comboMacroBoost * 0.7 + comboSurviveBoost
+    } else {
+      total += comboMacroBoost * 0.3 + comboSurviveBoost * 0.4
+    }
 
     return total / players.length
   }
@@ -2061,13 +2311,28 @@ function computePhaseNoLuckBattle({
       return 74
     }
 
-    const total = players.reduce((sum, player) => {
+    const phaseRoleWeights = ROLE_PHASE_WEIGHTS[phase.id] ?? {}
+    let total = 0
+
+    players.forEach((player) => {
+      const roleWeight = phaseRoleWeights[player.role] ?? 0.2
       const laneValue = player.stats.laning * 5
       const macroValue = player.stats.macro * 5
       const tfValue = player.stats.teamfight * 5
-      const base = (laneValue * phase.laneWeight) + (macroValue * phase.macroWeight) + (tfValue * phase.tfWeight)
-      return sum + base
-    }, 0)
+      const mechValue = player.stats.mechanics * 5
+      const mentalFactor = (player.stats.mental - 12) * 0.8
+      const base =
+        (laneValue * phase.laneWeight) +
+        (macroValue * phase.macroWeight) +
+        (tfValue * phase.tfWeight) +
+        (mechValue * 0.08) +
+        mentalFactor
+      total += base * (roleWeight * 5)
+
+      // Meta patch influence on enemy picks
+      const enemyPickKey = draftState?.enemyPicks?.[player.role]
+      total += computeMetaPatchPickBonus(enemyPickKey, metaPatchInfluence)
+    })
 
     return total / players.length
   }
@@ -2078,13 +2343,27 @@ function computePhaseNoLuckBattle({
     const approachMultiplier =
       phase.id === 'early' ? approach.laneMultiplier : phase.id === 'late' ? approach.lateMultiplier : 1
 
-    const objectiveBoost = phase.id === 'mid' || phase.id === 'late' ? (approach.objectiveMultiplier - 1) * 8 : 0
+    const objectiveBoost = phase.id === 'mid' || phase.id === 'late' ? (approach.objectiveMultiplier - 1) * 10 : 0
     const tacticBoost = (aggressivite * 0.08) + (rythmeJeu * 0.06) + (prioriteObjectifs * 0.04)
     const draftBoost = draftScore * (phase.id === 'early' ? 0.8 : phase.id === 'mid' ? 1.05 : 1.2) * DRAFT_WINRATE_IMPACT_FACTOR
     const exploitBoost = averageDraftPenalty * (phase.id === 'early' ? 15 : phase.id === 'mid' ? 12 : 9)
-    const enemyVariance = (stableHash(`${matchId}-${phase.id}-enemy`) % 9) - 4
 
-    const teamPower = (baseTeamPower * approachMultiplier) + objectiveBoost + tacticBoost + draftBoost - approach.farmPenalty
+    // Controlled variance from mental strength of team
+    const teamMental = roster.length
+      ? roster.reduce((sum, p) => sum + (p.mental ?? 14), 0) / roster.length
+      : 14
+    const enemyMental = safeOpponentRoster.length
+      ? safeOpponentRoster.reduce((sum, p) => sum + p.stats.mental, 0) / safeOpponentRoster.length
+      : 14
+    const mentalVarianceRange = Math.max(3, 14 - teamMental) // weaker mental → more variance
+    const varianceSeed = stableHash(`${matchId}-g${gameIndex}-${phase.id}-var`)
+    const teamVariance = ((varianceSeed % (mentalVarianceRange * 2 + 1)) - mentalVarianceRange) * 0.8
+    const enemyVarianceRange = Math.max(3, 14 - enemyMental)
+    const enemyVariance =
+      ((stableHash(`${matchId}-g${gameIndex}-${phase.id}-enemy`) % (enemyVarianceRange * 2 + 1)) - enemyVarianceRange) * 0.7
+
+    const sideBoost = phase.id === 'early' ? sideEarlyBoost : 0
+    const teamPower = (baseTeamPower * approachMultiplier) + objectiveBoost + tacticBoost + draftBoost - approach.farmPenalty + teamVariance + sideBoost
     const enemyPower = baseEnemyPower + enemyVariance + exploitBoost
     const diff = teamPower - enemyPower
     const goldSwing = clamp(Math.round(diff * 52), -4200, 4200)
@@ -2096,6 +2375,7 @@ function computePhaseNoLuckBattle({
       diff: Number(diff.toFixed(2)),
       goldSwing,
       winner: goldSwing >= 0 ? 'team' : 'enemy',
+      teamVariance: Number(teamVariance.toFixed(2)),
     }
   })
 
@@ -2104,10 +2384,13 @@ function computePhaseNoLuckBattle({
     phases: phaseResults,
     totalGoldAdv,
     winner: totalGoldAdv >= 0 ? 'team' : 'enemy',
+    activeCombos: combos.activeCombos,
   }
 }
 
-function generateLiveTimeline({ matchId, teamName, opponentName, phaseBattle }) {
+const LIVE_DECISION_MINUTES = [6, 14, 22]
+
+function generateLiveTimeline({ matchId, teamName, opponentName, phaseBattle, gameIndex = 0 }) {
   const eventMinutes = [3, 6, 9, 12, 15, 18, 22, 25, 28, 30]
   const eventsByPhase = {
     early: eventMinutes.filter((minute) => minute <= 15),
@@ -2125,7 +2408,7 @@ function generateLiveTimeline({ matchId, teamName, opponentName, phaseBattle }) 
     const phase = phaseBattle.phases.find((entry) => minute <= entry.endMinute) ?? phaseBattle.phases[2]
     const phaseEventCount = eventsByPhase[phase.id]?.length ?? 1
     const targetSwing = Math.round(phase.goldSwing / phaseEventCount)
-    const randomVariance = (stableHash(`${matchId}-${minute}-variance`) % 501) - 250
+    const randomVariance = (stableHash(`${matchId}-g${gameIndex}-${minute}-variance`) % 501) - 250
     let deltaGold = targetSwing + randomVariance
 
     if (index === eventMinutes.length - 1) {
@@ -2160,6 +2443,10 @@ function generateLiveTimeline({ matchId, teamName, opponentName, phaseBattle }) 
       ? [`chat: ${teamName} draft diff!`, 'chat: No luck executed.', 'chat: clean macro.']
       : [`chat: ${opponentName} is online now.`, 'chat: scaling gap...', 'chat: rough call there.']
 
+    const decision = LIVE_DECISION_MINUTES.includes(minute)
+      ? buildLiveDecisionForMinute({ matchId, gameIndex, minute, teamWonEvent, currentGoldDiff })
+      : null
+
     return {
       minute,
       phaseId: phase.id,
@@ -2170,11 +2457,85 @@ function generateLiveTimeline({ matchId, teamName, opponentName, phaseBattle }) 
         enemy: { ...scoreboard.enemy },
       },
       commentary: eventText,
-      chatLine: chatText[stableHash(`${matchId}-${minute}-chat`) % chatText.length],
+      chatLine: chatText[stableHash(`${matchId}-g${gameIndex}-${minute}-chat`) % chatText.length],
+      decision,
     }
   })
 
   return timeline
+}
+
+function buildLiveDecisionForMinute({ matchId, gameIndex, minute, teamWonEvent, currentGoldDiff }) {
+  const seed = stableHash(`${matchId}-g${gameIndex}-decision-${minute}`) % 3
+  const ahead = currentGoldDiff > 500
+  const behind = currentGoldDiff < -500
+
+  if (minute === 6) {
+    return {
+      id: `${matchId}-g${gameIndex}-d${minute}`,
+      minute,
+      title: 'Early Skirmish',
+      question: 'Contest le 1er drake ou reset safe ?',
+      options: [
+        {
+          id: 'contest',
+          label: 'Contest le drake',
+          reward: teamWonEvent ? 900 : -600,
+          commentary: 'Votre jungler fait le 50/50 sur le drake.',
+        },
+        {
+          id: 'reset',
+          label: 'Reset safe',
+          reward: ahead ? 200 : -150,
+          commentary: 'Vous rentrez en base pour un power spike propre.',
+        },
+      ],
+    }
+  }
+
+  if (minute === 14) {
+    return {
+      id: `${matchId}-g${gameIndex}-d${minute}`,
+      minute,
+      title: 'Mid Game Play',
+      question: seed === 0 ? 'Force le Herald ou trade top ?' : 'Rotate bot pour le plate ?',
+      options: [
+        {
+          id: 'force',
+          label: 'Force le play',
+          reward: teamWonEvent ? 1100 : -800,
+          commentary: 'Votre équipe choisit l engagement vertical.',
+        },
+        {
+          id: 'macro',
+          label: 'Joue la macro',
+          reward: ahead ? 500 : behind ? -200 : 300,
+          commentary: 'Vous priorisez la vision et les waves.',
+        },
+      ],
+    }
+  }
+
+  return {
+    id: `${matchId}-g${gameIndex}-d${minute}`,
+    minute,
+    title: 'Late Game Call',
+    question: 'Nashor setup ou teamfight mid ?',
+    options: [
+      {
+        id: 'nashor',
+        label: 'Setup Nashor',
+        reward: ahead ? 1400 : behind ? -900 : 600,
+        commentary: 'Vous installez la vision autour du Baron.',
+      },
+      {
+        id: 'fight',
+        label: 'Teamfight mid',
+        reward: teamWonEvent ? 1200 : -1000,
+        commentary: 'Vous cherchez le catch et la percee ouverte.',
+      },
+    ],
+  }
 }
 
 function buildRoleOrderKda(players, keyPrefix) {
@@ -2182,13 +2543,51 @@ function buildRoleOrderKda(players, keyPrefix) {
   return [...players]
     .sort((a, b) => (roleOrder[a.role] ?? 99) - (roleOrder[b.role] ?? 99))
     .map((player, index) => ({
-      player,
+      player: {
+        ...player,
+        playerId: player.playerId ?? null,
+      },
       seedKey: `${keyPrefix}-${index}-${player.role}-${player.joueur ?? player.pseudo}`,
     }))
 }
 
-function distributeKdaRows(rows, teamKills, teamWon, fatalRiskByRole = {}) {
+function computePlayerRating({ kills, deaths, assists, teamKills, teamWon, role, playerMental, mastery }) {
+  // Performance rating on a 0-10 scale inspired by Football Manager match ratings.
+  let rating = 6.5
+  const kdaRatio = (kills + assists) / Math.max(1, deaths)
+  rating += kills * 0.35
+  rating += assists * 0.12
+  rating -= deaths * 0.3
+  rating += (kdaRatio >= 5 ? 1 : kdaRatio >= 3 ? 0.6 : kdaRatio >= 2 ? 0.3 : kdaRatio >= 1 ? 0 : -0.4)
+
+  if (teamKills > 0) {
+    const contribution = (kills + assists) / Math.max(1, teamKills)
+    if (contribution >= 0.6) rating += 0.8
+    else if (contribution >= 0.4) rating += 0.4
+    else if (contribution <= 0.1) rating -= 0.4
+  }
+
+  if (teamWon) rating += 0.3
+  else rating -= 0.2
+
+  if (role === 'ADC' && kills >= 6) rating += 0.4
+  if (role === 'Support' && assists >= 12) rating += 0.5
+  if (role === 'Jungle' && kdaRatio >= 4) rating += 0.3
+  if (role === 'Mid' && kdaRatio >= 4) rating += 0.3
+
+  if (typeof playerMental === 'number') {
+    rating += (playerMental - 14) * 0.04
+  }
+  if (typeof mastery === 'number') {
+    rating += (mastery - 50) * 0.008
+  }
+
+  return clamp(Number(rating.toFixed(1)), 1, 10)
+}
+
+function distributeKdaRows(rows, teamKills, teamWon, fatalRiskByRole = {}, extraContext = {}) {
   const remaining = { kills: teamKills, assists: teamKills * 2 }
+  const { rosterProfiles = {}, baseRosterProfiles = {}, draftState = null, isEnemy = false } = extraContext
 
   return rows.map(({ player, seedKey }) => {
     const killWeight = player.role === 'ADC' || player.role === 'Mid' ? 1.35 : player.role === 'Jungle' ? 1.2 : 0.85
@@ -2213,13 +2612,36 @@ function distributeKdaRows(rows, teamKills, teamWon, fatalRiskByRole = {}) {
 
     const deaths = clamp(baseDeaths + fatalDeaths, 0, 16)
 
+    let mastery = null
+    if (!isEnemy && draftState && player.playerId) {
+      const profile = rosterProfiles[player.playerId] ?? baseRosterProfiles[player.playerId]
+      const pickKey = draftState.playerPicks?.[player.role]
+      if (profile && pickKey) {
+        mastery = profile.championMastery?.[pickKey] ?? 40
+      }
+    }
+
+    const rating = computePlayerRating({
+      kills,
+      deaths,
+      assists,
+      teamKills,
+      teamWon,
+      role: player.role,
+      playerMental: player.mental,
+      mastery,
+    })
+
     return {
       playerName: player.joueur ?? player.pseudo,
       role: player.role,
+      playerId: player.playerId ?? null,
       kills,
       deaths,
       assists,
       kda: Number(((kills + assists) / Math.max(1, deaths)).toFixed(2)),
+      rating,
+      mastery,
     }
   })
 }
@@ -2255,6 +2677,94 @@ function buildDefeatReason({ phaseBattle, draftScore, totalGoldDiff }) {
   return 'La macro adverse a creuse un ecart progressif sur les objectifs neutres.'
 }
 
+function simulateSingleGame({
+  matchId,
+  gameIndex,
+  teamName,
+  opponentName,
+  roster,
+  opponentRoster,
+  draftState,
+  draftScore,
+  draftPunishmentProfile,
+  rosterProfiles,
+  baseRosterProfiles,
+  approachId,
+  aggressivite,
+  rythmeJeu,
+  prioriteObjectifs,
+  metaPatchInfluence = null,
+  teamSide = 'blue',
+}) {
+  // Side bonus: blue side has first pick priority (+1 early lane), red side has last pick counter (+1 draft vs enemy carry)
+  const sideDraftScore = teamSide === 'blue' ? draftScore + 1 : draftScore + 2
+  const sideEarlyBoost = teamSide === 'blue' ? 1.5 : 0  // blue gets a small early advantage
+
+  const phaseBattle = computePhaseNoLuckBattle({
+    matchId: `${matchId}-g${gameIndex}-${teamSide}`,
+    roster,
+    opponentRoster,
+    approachId,
+    draftScore: sideDraftScore,
+    draftState,
+    draftPunishmentProfile,
+    aggressivite,
+    rythmeJeu,
+    prioriteObjectifs,
+    gameIndex,
+    metaPatchInfluence,
+    sideEarlyBoost,
+  })
+
+  const timeline = generateLiveTimeline({
+    matchId: `${matchId}-g${gameIndex}`,
+    teamName,
+    opponentName,
+    phaseBattle,
+    gameIndex,
+  })
+
+  const finalEvent = timeline[timeline.length - 1]
+  const teamWon = (finalEvent?.goldDiff ?? phaseBattle.totalGoldAdv) >= 0
+  const teamRows = distributeKdaRows(
+    buildRoleOrderKda(roster, `${matchId}-g${gameIndex}-team`),
+    finalEvent?.scoreboard.team.kills ?? 9,
+    teamWon,
+    draftPunishmentProfile.fatalRiskByRole,
+    { rosterProfiles, baseRosterProfiles, draftState, isEnemy: false },
+  )
+  const enemyRows = distributeKdaRows(
+    buildRoleOrderKda(
+      (opponentRoster?.length ? opponentRoster : []).map((player) => ({
+        joueur: player.pseudo,
+        role: player.role,
+        mental: player.stats?.mental ?? 14,
+      })),
+      `${matchId}-g${gameIndex}-enemy`,
+    ),
+    finalEvent?.scoreboard.enemy.kills ?? 9,
+    !teamWon,
+    {},
+    { isEnemy: true },
+  )
+
+  return {
+    gameIndex,
+    phaseBattle,
+    timeline,
+    finalScoreboard: finalEvent?.scoreboard ?? {
+      team: { kills: 0, gold: 50000, towers: 0, dragons: 0 },
+      enemy: { kills: 0, gold: 50000, towers: 0, dragons: 0 },
+    },
+    goldDiff: finalEvent?.goldDiff ?? phaseBattle.totalGoldAdv,
+    teamWon,
+    teamRows,
+    enemyRows,
+    activeCombos: phaseBattle.activeCombos ?? [],
+    mvp: getMvpFromRows(teamWon ? teamRows : enemyRows),
+  }
+}
+
 function buildMatchSimulationEngine({
   matchId,
   teamName,
@@ -2266,11 +2776,14 @@ function buildMatchSimulationEngine({
   baseRosterProfiles,
   approachId,
   draftScore,
+  seriesType = 'BO1',
   mentalCoachLevel = 0,
   isHighPressureMatch = false,
   aggressivite,
   rythmeJeu,
   prioriteObjectifs,
+  metaPatchInfluence = null,
+  approachByGame = null,
 }) {
   const draftPunishmentProfile = applyMentalCoachToPunishmentProfile(
     computeDraftPunishmentProfile({
@@ -2283,60 +2796,126 @@ function buildMatchSimulationEngine({
     isHighPressureMatch,
   )
 
-  const phaseBattle = computePhaseNoLuckBattle({
-    matchId,
-    roster,
-    opponentRoster,
-    approachId,
-    draftScore,
-    draftPunishmentProfile,
-    aggressivite,
-    rythmeJeu,
-    prioriteObjectifs,
-  })
+  const winsNeeded = seriesType === 'BO5' ? 3 : seriesType === 'BO3' ? 2 : 1
+  const games = []
+  let teamWins = 0
+  let enemyWins = 0
+  let gameIndex = 0
 
-  const timeline = generateLiveTimeline({
-    matchId,
-    teamName,
-    opponentName,
-    phaseBattle,
-  })
+  // Ban pool reserved between games (acts like "target bans" carrying the meta-read across the series)
+  const reservedBans = new Set(draftState?.bans ?? [])
 
-  const finalEvent = timeline[timeline.length - 1]
-  const teamWon = (finalEvent?.goldDiff ?? phaseBattle.totalGoldAdv) >= 0
-  const teamRows = distributeKdaRows(
-    buildRoleOrderKda(roster, `${matchId}-team`),
-    finalEvent?.scoreboard.team.kills ?? 9,
-    teamWon,
-    draftPunishmentProfile.fatalRiskByRole,
-  )
-  const enemyRows = distributeKdaRows(
-    buildRoleOrderKda(
-      (opponentRoster?.length ? opponentRoster : []).map((player) => ({ joueur: player.pseudo, role: player.role })),
-      `${matchId}-enemy`,
-    ),
-    finalEvent?.scoreboard.enemy.kills ?? 9,
-    !teamWon,
-  )
+  while (teamWins < winsNeeded && enemyWins < winsNeeded) {
+    // Derive per-game draft state: carry bans, rotate picks to reflect adaptation after the first game.
+    const thisGameDraft = {
+      bans: Array.from(reservedBans),
+      playerPicks: { ...(draftState?.playerPicks ?? {}) },
+      enemyPicks: { ...(draftState?.enemyPicks ?? {}) },
+      pickTurnIndex: draftState?.pickTurnIndex ?? 0,
+    }
 
-  return {
-    phaseBattle,
-    timeline,
-    finalScoreboard: finalEvent?.scoreboard ?? {
+    // Approach may differ per game if approachByGame is provided, otherwise fall back to the global approachId
+    const gameApproachId = approachByGame?.[gameIndex] ?? approachId
+
+    // Side swap across games: game 1 = blue, game 2 = red, game 3 = blue...
+    const teamSide = gameIndex % 2 === 0 ? 'blue' : 'red'
+
+    const game = simulateSingleGame({
+      matchId,
+      gameIndex,
+      teamName,
+      opponentName,
+      roster,
+      opponentRoster,
+      draftState: thisGameDraft,
+      draftScore,
+      draftPunishmentProfile,
+      rosterProfiles,
+      baseRosterProfiles,
+      approachId: gameApproachId,
+      aggressivite,
+      rythmeJeu,
+      prioriteObjectifs,
+      metaPatchInfluence,
+      teamSide,
+    })
+    game.teamSide = teamSide
+
+    games.push(game)
+    if (game.teamWon) {
+      teamWins += 1
+    } else {
+      enemyWins += 1
+    }
+    gameIndex += 1
+  }
+
+  const seriesWon = teamWins > enemyWins
+  const lastGame = games[games.length - 1]
+  const finalGame = lastGame ?? {
+    phaseBattle: { phases: [], totalGoldAdv: 0 },
+    timeline: [],
+    finalScoreboard: {
       team: { kills: 0, gold: 50000, towers: 0, dragons: 0 },
       enemy: { kills: 0, gold: 50000, towers: 0, dragons: 0 },
     },
-    goldDiff: finalEvent?.goldDiff ?? phaseBattle.totalGoldAdv,
-    teamWon,
-    teamRows,
-    enemyRows,
+    goldDiff: 0,
+    teamWon: false,
+    teamRows: [],
+    enemyRows: [],
+    mvp: null,
+  }
+
+  // Series-level aggregated rows (average ratings across games) for the roster progression logic.
+  const seriesRowsByPlayerId = {}
+  games.forEach((game) => {
+    game.teamRows.forEach((row) => {
+      if (!row.playerId) return
+      const entry = seriesRowsByPlayerId[row.playerId] ?? {
+        playerId: row.playerId,
+        playerName: row.playerName,
+        role: row.role,
+        kills: 0,
+        deaths: 0,
+        assists: 0,
+        ratingSum: 0,
+        gamesPlayed: 0,
+      }
+      entry.kills += row.kills
+      entry.deaths += row.deaths
+      entry.assists += row.assists
+      entry.ratingSum += row.rating ?? 6.5
+      entry.gamesPlayed += 1
+      seriesRowsByPlayerId[row.playerId] = entry
+    })
+  })
+
+  const seriesRows = Object.values(seriesRowsByPlayerId).map((entry) => ({
+    ...entry,
+    rating: Number((entry.ratingSum / Math.max(1, entry.gamesPlayed)).toFixed(1)),
+  }))
+
+  return {
+    phaseBattle: finalGame.phaseBattle,
+    timeline: finalGame.timeline,
+    finalScoreboard: finalGame.finalScoreboard,
+    goldDiff: finalGame.goldDiff,
+    teamWon: seriesWon,
+    teamRows: finalGame.teamRows,
+    enemyRows: finalGame.enemyRows,
     draftPunishmentProfile,
-    mvp: getMvpFromRows(teamWon ? teamRows : enemyRows),
+    mvp: finalGame.mvp ?? getMvpFromRows(seriesWon ? finalGame.teamRows : finalGame.enemyRows),
     defeatReason: buildDefeatReason({
-      phaseBattle,
+      phaseBattle: finalGame.phaseBattle,
       draftScore,
-      totalGoldDiff: finalEvent?.goldDiff ?? phaseBattle.totalGoldAdv,
+      totalGoldDiff: finalGame.goldDiff,
     }),
+    games,
+    seriesRows,
+    seriesScore: `${teamWins}-${enemyWins}`,
+    seriesWon,
+    teamWins,
+    enemyWins,
   }
 }
 
@@ -4223,6 +4802,7 @@ function MatchLivePage({
   onAdvance,
   onSkip,
   onFinish,
+  onResolveDecision,
 }) {
   const LIVE_SPEED_BASE_DELAY_MS = 2600
 
@@ -4250,9 +4830,23 @@ function MatchLivePage({
   const currentEvent = liveSession ? liveSession.timeline[currentIndex] : null
   const eventsShown = liveSession ? liveSession.timeline.slice(0, currentIndex + 1) : []
   const recentComments = eventsShown.slice(-4).reverse()
-  const scoreboard = currentEvent?.scoreboard ?? liveSession?.finalScoreboard ?? {
+  const decisionAdjustments = liveSession?.decisionAdjustments ?? {}
+  const pendingDecision =
+    currentEvent?.decision && !decisionAdjustments[currentEvent.decision.id] ? currentEvent.decision : null
+  const totalDecisionReward = Object.values(decisionAdjustments).reduce((sum, entry) => sum + (entry?.reward ?? 0), 0)
+  const baseScoreboard = currentEvent?.scoreboard ?? liveSession?.finalScoreboard ?? {
     team: { kills: 0, gold: 0, towers: 0, dragons: 0 },
     enemy: { kills: 0, gold: 0, towers: 0, dragons: 0 },
+  }
+  const scoreboard = {
+    team: {
+      ...baseScoreboard.team,
+      gold: baseScoreboard.team.gold + Math.max(0, totalDecisionReward),
+    },
+    enemy: {
+      ...baseScoreboard.enemy,
+      gold: baseScoreboard.enemy.gold + Math.max(0, -totalDecisionReward),
+    },
   }
   const liveMinute = currentEvent?.minute ?? 0
   const progressionRatio = clamp(liveMinute / 30, 0, 1)
@@ -4359,7 +4953,7 @@ function MatchLivePage({
     : null
 
   useEffect(() => {
-    if (!liveSession || isAutoPaused) {
+    if (!liveSession || isAutoPaused || pendingDecision) {
       return undefined
     }
 
@@ -4380,7 +4974,7 @@ function MatchLivePage({
     return () => {
       clearTimeout(advanceTimeoutId)
     }
-  }, [liveSession, isFinished, onAdvance, onFinish, isAutoPaused, autoAdvanceDelayMs])
+  }, [liveSession, isFinished, onAdvance, onFinish, isAutoPaused, autoAdvanceDelayMs, pendingDecision])
 
   if (!liveSession) {
     return (
@@ -4539,6 +5133,29 @@ function MatchLivePage({
               </div>
             </div>
           </div>
+
+          {pendingDecision ? (
+            <div className="pointer-events-auto absolute inset-0 z-20 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+              <div className="w-full max-w-md rounded-lg border border-[#c8aa6e]/60 bg-[#0a0a0c] p-5 shadow-2xl">
+                <p className="text-[10px] uppercase tracking-[0.12em] text-[#c8aa6e]">Decision Coach - Minute {pendingDecision.minute}</p>
+                <h3 className="mt-1 text-lg font-bold uppercase tracking-[0.06em] text-white">{pendingDecision.title}</h3>
+                <p className="mt-2 text-sm text-gray-300">{pendingDecision.question}</p>
+                <div className="mt-4 flex flex-col gap-2">
+                  {pendingDecision.options.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => onResolveDecision && onResolveDecision(pendingDecision.id, option)}
+                      className="flex flex-col items-start rounded border border-gray-700 bg-gray-900/80 px-3 py-2 text-left transition hover:border-[#c8aa6e] hover:bg-gray-800"
+                    >
+                      <span className="text-sm font-semibold text-white">{option.label}</span>
+                      <span className="mt-0.5 text-[11px] text-gray-400">{option.commentary}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {/* Right Sidebar - Red Team Stats */}
@@ -4622,21 +5239,86 @@ function MatchResultPage({
     draftImpactPercent: 0,
     draftImpactNote: 'Donnees indisponibles.',
   }
+  const seriesScore = report.seriesScore ?? null
+  const activeCombos = report.activeCombos ?? []
+  const decisionAdjustments = report.decisionAdjustments ?? {}
+  const decisionEntries = Object.values(decisionAdjustments)
+  const prizeMoney = report.prizeMoney ?? 0
+  const games = report.games ?? []
+  const seriesRows = report.seriesRows ?? []
+  const teamRowsToDisplay = seriesRows.length > 0
+    ? seriesRows.filter((row) => row.team === 'team' || row.team === undefined)
+    : report.teamRows
+  const enemyRowsToDisplay = seriesRows.length > 0
+    ? seriesRows.filter((row) => row.team === 'enemy')
+    : report.enemyRows
 
   return (
     <div className="grid gap-4 xl:grid-cols-[1.8fr_1fr]">
-      <Panel title="Fin de Match" subtitle={`${report.teamName} vs ${report.opponentName} - ${resultLabel}`}>
-        <div className="mb-3 grid gap-2 text-sm text-[var(--text-soft)] md:grid-cols-3">
+      <Panel title="Fin de Match" subtitle={`${report.teamName} vs ${report.opponentName} - ${resultLabel}${seriesScore ? ` (${seriesScore})` : ''}`}>
+        <div className="mb-3 grid gap-2 text-sm text-[var(--text-soft)] md:grid-cols-4">
+          <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
+            Serie: <span className="font-semibold text-[var(--text-main)]">{seriesScore ?? '-'}</span>
+          </p>
           <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
             Kills: <span className="font-semibold text-[var(--text-main)]">{report.finalScoreboard.team.kills} - {report.finalScoreboard.enemy.kills}</span>
           </p>
           <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
-            Gold: <span className="font-semibold text-[var(--text-main)]">{Math.round(report.finalScoreboard.team.gold / 1000)}k - {Math.round(report.finalScoreboard.enemy.gold / 1000)}k</span>
-          </p>
-          <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
             Draft Score: <span className="font-semibold text-[var(--text-main)]">{report.draftScore >= 0 ? '+' : ''}{report.draftScore}</span>
           </p>
+          <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
+            Prime: <span className={`font-semibold ${prizeMoney >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+              {formatBudgetShort(prizeMoney)}
+            </span>
+          </p>
         </div>
+
+        {games.length > 1 ? (
+          <div className="mb-3 grid gap-2 md:grid-cols-5">
+            {games.map((game, index) => (
+              <div
+                key={`game-${index}`}
+                className={`rounded border px-2 py-1 text-center text-xs ${
+                  game.teamWon ? 'border-green-700 bg-green-950/40 text-green-200' : 'border-red-700 bg-red-950/40 text-red-200'
+                }`}
+              >
+                G{index + 1}: {game.teamWon ? 'V' : 'D'}
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {activeCombos.length > 0 ? (
+          <div className="mb-3 rounded border border-[var(--accent)] bg-[color:rgba(200,170,110,0.1)] p-3">
+            <p className="text-[11px] uppercase tracking-[0.08em] text-[var(--accent)]">Combos No Luck actives</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {activeCombos.map((combo) => (
+                <span
+                  key={`combo-${combo.id}`}
+                  className="rounded border border-[var(--accent)] bg-[color:rgba(200,170,110,0.18)] px-2 py-1 text-xs text-[var(--text-main)]"
+                >
+                  {combo.label} (+{combo.bonus?.value ?? 0}% {combo.bonus?.stat ?? ''})
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {decisionEntries.length > 0 ? (
+          <div className="mb-3 rounded border border-[var(--border-strong)] bg-[var(--surface-2)] p-3">
+            <p className="text-[11px] uppercase tracking-[0.08em] text-[var(--text-muted)]">Decisions live de la serie</p>
+            <div className="mt-2 space-y-1">
+              {decisionEntries.map((entry) => (
+                <div key={`decision-${entry.id}`} className="flex items-center justify-between text-xs">
+                  <span className="text-[var(--text-soft)]">{entry.label ?? 'Decision'}</span>
+                  <span className={entry.reward >= 0 ? 'text-green-400' : 'text-red-400'}>
+                    {entry.reward >= 0 ? '+' : ''}{entry.reward}g
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         <table className="fm-data-table">
           <thead>
@@ -4645,23 +5327,40 @@ function MatchResultPage({
               <th>Role</th>
               <th>Joueur</th>
               <th>KDA</th>
+              <th>Note</th>
             </tr>
           </thead>
           <tbody>
-            {report.teamRows.map((row) => (
-              <tr key={`team-${row.playerName}-${row.role}`}>
-                <td>{report.teamName}</td>
-                <td>{row.role}</td>
-                <td>{row.playerName}</td>
-                <td>{row.kills}/{row.deaths}/{row.assists}</td>
-              </tr>
-            ))}
-            {report.enemyRows.map((row) => (
+            {teamRowsToDisplay.map((row) => {
+              const rating = row.rating ?? null
+              const ratingClass = rating === null
+                ? 'text-[var(--text-soft)]'
+                : rating >= 8
+                  ? 'text-green-400 font-bold'
+                  : rating >= 7
+                    ? 'text-green-300'
+                    : rating >= 6
+                      ? 'text-[var(--text-main)]'
+                      : rating >= 5
+                        ? 'text-amber-300'
+                        : 'text-red-400'
+              return (
+                <tr key={`team-${row.playerName}-${row.role}`}>
+                  <td>{report.teamName}</td>
+                  <td>{row.role}</td>
+                  <td>{row.playerName}</td>
+                  <td>{row.kills}/{row.deaths}/{row.assists}</td>
+                  <td className={ratingClass}>{rating !== null ? rating.toFixed(1) : '-'}</td>
+                </tr>
+              )
+            })}
+            {enemyRowsToDisplay.map((row) => (
               <tr key={`enemy-${row.playerName}-${row.role}`}>
                 <td>{report.opponentName}</td>
                 <td>{row.role}</td>
                 <td>{row.playerName}</td>
                 <td>{row.kills}/{row.deaths}/{row.assists}</td>
+                <td className="text-[var(--text-soft)]">-</td>
               </tr>
             ))}
           </tbody>
@@ -4823,43 +5522,109 @@ function MatchResultPage({
   )
 }
 
-function RecrutementPage({ staffTeam, onUpgradeStaff }) {
+function RecrutementPage({
+  staffTeam,
+  onUpgradeStaff,
+  transferMarket = [],
+  onSignPlayer,
+  budget = 0,
+  scoutingQueue = [],
+  onLaunchScout,
+  headScoutLevel = 0,
+}) {
   return (
     <div className="grid gap-4 xl:grid-cols-[2fr_1fr]">
-      <Panel title="Recrutement" subtitle="Scouting SoloQ et ligues externes">
-        <table className="fm-data-table">
-          <thead>
-            <tr>
-              <th>Nom</th>
-              <th>Role</th>
-              <th>Source</th>
-              <th>Potentiel</th>
-              <th>Valeur</th>
-            </tr>
-          </thead>
-          <tbody>
-            {[
-              ['Kairo', 'Mid', 'KR SoloQ', 'A', '$2.9M'],
-              ['Yuto', 'Jungle', 'JP League', 'A-', '$1.8M'],
-              ['Val', 'ADC', 'EU Masters', 'B+', '$1.1M'],
-              ['Sage', 'Support', 'NA Academy', 'B', '$940K'],
-            ].map((row) => (
-              <tr key={row[0]}>
-                {row.map((cell) => (
-                  <td key={cell}>{cell}</td>
-                ))}
+      <Panel title="Marche des transferts" subtitle={`Tresorerie: ${formatBudgetShort(budget)}`}>
+        {transferMarket.length === 0 ? (
+          <p className="text-sm text-[var(--text-soft)]">Aucun joueur disponible cette fenetre. Reviens plus tard.</p>
+        ) : (
+          <table className="fm-data-table">
+            <thead>
+              <tr>
+                <th>Pseudo</th>
+                <th>Role</th>
+                <th>Ligue</th>
+                <th>Stats clefs</th>
+                <th>Potentiel</th>
+                <th>Prix</th>
+                <th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {transferMarket.map((target) => {
+                const canAfford = budget >= (target.askingPrice ?? 0)
+                const potentialLabel = target.revealedPotential
+                  ? `${target.revealedPotential}`
+                  : headScoutLevel >= 2 ? `~${Math.round(target.potential / 10) * 10}` : '???'
+                return (
+                  <tr key={`market-${target.id}`}>
+                    <td className="font-semibold text-[var(--text-main)]">{target.pseudo}</td>
+                    <td>{target.role}</td>
+                    <td className="text-xs text-[var(--text-soft)]">{target.league ?? target.source}</td>
+                    <td className="text-xs text-[var(--text-soft)]">
+                      Lane {target.statsPreview?.laning ?? '?'} / TF {target.statsPreview?.teamfight ?? '?'} / Mech {target.statsPreview?.mechanics ?? '?'}
+                    </td>
+                    <td className="text-xs">{potentialLabel}</td>
+                    <td className={`font-mono text-xs ${canAfford ? 'text-[var(--text-main)]' : 'text-red-400'}`}>
+                      {formatBudgetShort(target.askingPrice ?? 0)}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        onClick={() => onSignPlayer?.(target.id)}
+                        disabled={!canAfford || target.signed}
+                        className={`rounded border px-2 py-1 text-[10px] uppercase tracking-wide ${
+                          canAfford && !target.signed
+                            ? 'border-[var(--accent)] bg-[color:rgba(200,170,110,0.18)] text-[var(--text-main)] hover:bg-[color:rgba(200,170,110,0.28)]'
+                            : 'cursor-not-allowed border-[var(--border-soft)] bg-[var(--surface-3)] text-[var(--text-muted)] opacity-70'
+                        }`}
+                      >
+                        {target.signed ? 'Signe' : canAfford ? 'Signer' : 'Fonds KO'}
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        )}
       </Panel>
 
       <div className="space-y-4">
+        <Panel title="Scouting en cours" subtitle={`Head Scout niveau ${headScoutLevel}`}>
+          <div className="space-y-2 text-xs">
+            {scoutingQueue.length === 0 ? (
+              <p className="text-[var(--text-soft)]">File de scouting vide.</p>
+            ) : (
+              scoutingQueue.map((task, index) => (
+                <div key={`scout-${index}`} className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-2 py-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-[var(--text-main)]">{task.player}</span>
+                    <span className="text-[var(--text-soft)]">{task.league}</span>
+                  </div>
+                  <div className="text-[10px] text-[var(--text-soft)]">
+                    {task.daysRemaining > 0 ? `${task.daysRemaining}j restants` : 'Rapport pret - Arrivera sur le marche'}
+                  </div>
+                </div>
+              ))
+            )}
+            {onLaunchScout ? (
+              <button
+                type="button"
+                onClick={onLaunchScout}
+                className="mt-2 w-full rounded border border-[var(--accent)] bg-[color:rgba(200,170,110,0.18)] px-2 py-1.5 text-[10px] uppercase tracking-wide text-[var(--text-main)] hover:bg-[color:rgba(200,170,110,0.28)]"
+              >
+                Lancer un scout (3j)
+              </button>
+            ) : null}
+          </div>
+        </Panel>
+
         <Panel title="Objectif mercato" subtitle="Fenetre en cours">
           <div className="space-y-2 text-sm text-[var(--text-soft)]">
             <p>Priorite 1: Mid remplaçant U21</p>
             <p>Priorite 2: Support vocal lead</p>
-            <p>Budget maximal: $2.4M</p>
+            <p>Budget disponible: {formatBudgetShort(budget)}</p>
           </div>
         </Panel>
 
@@ -4902,16 +5667,31 @@ function RecrutementPage({ staffTeam, onUpgradeStaff }) {
   )
 }
 
-function StaffFinancesPage({ staffTeam, staffMonthlyCost }) {
+function StaffFinancesPage({
+  staffTeam,
+  staffMonthlyCost,
+  budget,
+  financeLedger,
+  sponsorContracts,
+  boardObjectives,
+  playerCount,
+}) {
   const staffRows = Object.entries(STAFF_CATALOG).map(([staffId, config]) => {
     const level = clamp(staffTeam?.[staffId] ?? 0, 0, STAFF_MAX_LEVEL)
     return {
       department: config.label,
       lead: level > 0 ? `Niveau ${level}` : 'Non recrute',
       levelLabel: `${level}/${STAFF_MAX_LEVEL}`,
-      cost: `$${Math.round((config.monthlyCostByLevel[level] ?? 0) / 1000)}K`,
+      cost: `${Math.round((config.monthlyCostByLevel[level] ?? 0) / 1000)}k€`,
     }
   })
+
+  const totalSalaries = (playerCount ?? 0) * DEFAULT_PLAYER_SALARY
+  const totalSponsors = (sponsorContracts ?? [])
+    .filter((sponsor) => sponsor.status !== 'ended')
+    .reduce((sum, sponsor) => sum + (sponsor.monthly ?? 0), 0)
+  const monthlyDelta = totalSponsors - staffMonthlyCost - totalSalaries
+  const runwayMonths = monthlyDelta < 0 ? Math.floor(budget / Math.abs(monthlyDelta)) : null
 
   return (
     <div className="grid gap-4 xl:grid-cols-[1.8fr_1fr]">
@@ -4936,19 +5716,83 @@ function StaffFinancesPage({ staffTeam, staffMonthlyCost }) {
             ))}
           </tbody>
         </table>
+
+        <div className="mt-4">
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-soft)]">Dernieres operations</h3>
+          <table className="fm-data-table">
+            <thead>
+              <tr>
+                <th>Operation</th>
+                <th className="text-right">Montant</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(financeLedger ?? []).slice(0, 12).map((entry) => (
+                <tr key={entry.id}>
+                  <td>{entry.label}</td>
+                  <td className={`text-right font-mono ${entry.amount >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {entry.amount >= 0 ? '+' : ''}{formatBudgetShort(entry.amount)}
+                  </td>
+                </tr>
+              ))}
+              {(financeLedger ?? []).length === 0 ? (
+                <tr><td colSpan={2} className="text-center text-[var(--text-soft)]">Aucune operation enregistree.</td></tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
       </Panel>
 
       <div className="space-y-4">
-        <Panel title="Synthese budget" subtitle="Mois en cours">
+        <Panel title="Synthese budget" subtitle="Tresorerie live">
           <div className="space-y-2 text-sm text-[var(--text-soft)]">
-            <p>Budget annuel: $8.4M</p>
-            <p>Masse salariale staff: <span className="font-semibold text-[var(--text-main)]">${Math.round(staffMonthlyCost / 1000)}K/mois</span></p>
-            <p>Sponsors actifs: 4</p>
+            <p className="text-base">
+              Tresorerie: <span className="font-semibold text-[var(--text-main)]">{formatBudgetShort(budget)}</span>
+            </p>
+            <p>Salaires joueurs: <span className="text-[var(--text-main)]">{formatBudgetShort(totalSalaries)}/mois</span></p>
+            <p>Masse salariale staff: <span className="text-[var(--text-main)]">{formatBudgetShort(staffMonthlyCost)}/mois</span></p>
+            <p>Revenus sponsors: <span className="text-green-400">{formatBudgetShort(totalSponsors)}/mois</span></p>
+            <p className={monthlyDelta >= 0 ? 'text-green-400' : 'text-red-400'}>
+              Solde mensuel: {monthlyDelta >= 0 ? '+' : ''}{formatBudgetShort(monthlyDelta)}
+            </p>
+            {runwayMonths !== null ? (
+              <p className="text-xs text-red-300">Survie estimee: {runwayMonths} mois sans primes</p>
+            ) : null}
           </div>
         </Panel>
 
-        <Panel title="Sponsors" subtitle="Objectifs contractuels">
-          <p className="text-sm text-[var(--text-soft)]">Atteindre 60% de winrate pour debloquer bonus de $120K.</p>
+        <Panel title="Sponsors actifs" subtitle="Contrats et objectifs">
+          <div className="space-y-2 text-sm">
+            {(sponsorContracts ?? []).map((sponsor) => (
+              <div key={sponsor.id} className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-[var(--text-main)]">{sponsor.label}</span>
+                  <span className="text-xs text-green-400">{formatBudgetShort(sponsor.monthly)}/mois</span>
+                </div>
+                <p className="mt-1 text-xs text-[var(--text-soft)]">
+                  Objectif: {sponsor.target?.type === 'winrate'
+                    ? `${sponsor.target.value}% winrate`
+                    : `Top ${sponsor.target?.value}`} - Bonus {formatBudgetShort(sponsor.target?.bonus ?? 0)}
+                </p>
+              </div>
+            ))}
+          </div>
+        </Panel>
+
+        <Panel title="Objectifs board" subtitle="Attentes des proprietaires">
+          <div className="space-y-2 text-sm">
+            {(boardObjectives ?? []).map((objective) => (
+              <div key={objective.id} className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-[var(--text-main)]">{objective.label}</span>
+                  <span className={`text-xs ${objective.status === 'done' ? 'text-green-400' : objective.status === 'failed' ? 'text-red-400' : 'text-amber-300'}`}>
+                    {objective.status === 'done' ? 'Accomplie' : objective.status === 'failed' ? 'Echouee' : 'En cours'}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-[var(--text-soft)]">Recompense: {formatBudgetShort(objective.reward ?? 0)}</p>
+              </div>
+            ))}
+          </div>
         </Panel>
       </div>
     </div>
@@ -5060,6 +5904,25 @@ function stableHash(text) {
     hash = (hash * 31 + text.charCodeAt(index)) >>> 0
   }
   return hash
+}
+
+function formatBudgetShort(amount) {
+  const sign = amount < 0 ? '-' : ''
+  const value = Math.abs(Math.round(amount))
+  if (value >= 1_000_000) {
+    return `${sign}${(value / 1_000_000).toFixed(value >= 10_000_000 ? 1 : 2)}M€`
+  }
+  if (value >= 1_000) {
+    return `${sign}${(value / 1_000).toFixed(0)}k€`
+  }
+  return `${sign}${value}€`
+}
+
+function formatBudgetFull(amount) {
+  const sign = amount < 0 ? '-' : ''
+  const value = Math.abs(Math.round(amount))
+  const formatted = value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
+  return `${sign}${formatted}€`
 }
 
 function buildChampionIdentity(champion, activeLeague) {
@@ -5600,6 +6463,34 @@ function App() {
   const [matchFlowStepById, setMatchFlowStepById] = useState({})
   const [liveMatchSession, setLiveMatchSession] = useState(null)
   const [lastMatchReport, setLastMatchReport] = useState(null)
+  const [budget, setBudget] = useState(SEASON_START_BUDGET)
+  const [financeLedger, setFinanceLedger] = useState(() => [
+    {
+      id: 'seed-sponsor',
+      label: 'Contrat initial - Fond saison',
+      amount: SEASON_START_BUDGET,
+      dateKey: '2026-01-01',
+      type: 'credit',
+    },
+  ])
+  const [sponsorContracts, setSponsorContracts] = useState(() =>
+    SPONSOR_CONTRACTS.map((sponsor) => ({ ...sponsor, status: 'active', progress: 0 })),
+  )
+  const [boardObjectives, setBoardObjectives] = useState(() =>
+    BOARD_OBJECTIVES.map((objective) => ({ ...objective, status: 'pending', progress: 0 })),
+  )
+  const [seasonReview, setSeasonReview] = useState(null)
+  const [gameOver, setGameOver] = useState(null)
+  const [metaPatchState, setMetaPatchState] = useState(() => ({
+    version: '14.1',
+    boostedArchetype: META_PATCH_ARCHETYPES[0],
+    nerfedArchetype: META_PATCH_ARCHETYPES[1],
+    boostedChampions: [],
+    nerfedChampions: [],
+  }))
+  const [patchHistory, setPatchHistory] = useState(() => [])
+  const [transferMarket, setTransferMarket] = useState(() => buildTransferMarketFromPool(null, 8))
+  const [matchHistory, setMatchHistory] = useState([])
 
   const activeLeague = LEAGUES[selectedLeagueId]
   const standings = getLeagueStandings(selectedLeagueId)
@@ -5946,20 +6837,111 @@ function App() {
       return
     }
 
+    const currentLevel = clamp(staffTeam[staffId] ?? 0, 0, STAFF_MAX_LEVEL)
+    if (currentLevel >= STAFF_MAX_LEVEL) {
+      return
+    }
+    // Signing bonus: 2 months of the new monthly cost
+    const nextLevel = currentLevel + 1
+    const monthlyNext = config.monthlyCostByLevel[nextLevel] ?? 0
+    const signingCost = monthlyNext * 2
+
+    if (budget < signingCost) {
+      setTimeNotification(`Fonds insuffisants pour recruter ${config.label} (${formatBudgetShort(signingCost)} requis).`)
+      return
+    }
+
+    setBudget((previous) => previous - signingCost)
+    setFinanceLedger((previous) => [
+      {
+        id: `staff-signing-${staffId}-${Date.now()}`,
+        label: `Prime signature ${config.label} niv ${nextLevel}`,
+        amount: -signingCost,
+        date: currentDate.toISOString(),
+      },
+      ...previous,
+    ].slice(0, 40))
+
     setStaffTeam((previous) => {
-      const currentLevel = clamp(previous[staffId] ?? 0, 0, STAFF_MAX_LEVEL)
-      if (currentLevel >= STAFF_MAX_LEVEL) {
+      const existing = clamp(previous[staffId] ?? 0, 0, STAFF_MAX_LEVEL)
+      if (existing >= STAFF_MAX_LEVEL) {
         return previous
       }
-
-      const nextLevel = currentLevel + 1
-      setTimeNotification(`${config.label} recrute/upgrade niveau ${nextLevel}. ${config.role}.`)
-
+      setTimeNotification(`${config.label} recrute/upgrade niveau ${existing + 1}. ${config.role}. Prime ${formatBudgetShort(signingCost)}.`)
       return {
         ...previous,
-        [staffId]: nextLevel,
+        [staffId]: existing + 1,
       }
     })
+  }
+
+  const handleSignPlayer = (playerId) => {
+    const target = transferMarket.find((entry) => entry.id === playerId)
+    if (!target || target.signed) {
+      return
+    }
+    if (budget < target.askingPrice) {
+      setTimeNotification(`Fonds insuffisants pour signer ${target.pseudo} (${formatBudgetShort(target.askingPrice)} requis).`)
+      return
+    }
+
+    setBudget((previous) => previous - target.askingPrice)
+    setFinanceLedger((previous) => [
+      {
+        id: `signing-${target.id}-${Date.now()}`,
+        label: `Signature ${target.pseudo} (${target.role})`,
+        amount: -target.askingPrice,
+        date: currentDate.toISOString(),
+      },
+      ...previous,
+    ].slice(0, 40))
+
+    setTransferMarket((previous) =>
+      previous.map((entry) => (entry.id === target.id ? { ...entry, signed: true } : entry)),
+    )
+
+    // Add signed player to roster profile overrides so he is counted in the active roster
+    setRosterProfiles((previous) => ({
+      ...previous,
+      [target.id]: {
+        ...(previous[target.id] ?? {}),
+        pseudo: target.pseudo,
+        realName: target.realName,
+        age: target.age,
+        nationality: 'Inconnue',
+        marketValue: formatEuroValue(target.askingPrice),
+        condition: 72,
+        moral: 'Bon',
+        ladderLP: 850,
+        confident: false,
+        teamfightBonus: 0,
+        mechanicsBonus: 0,
+        macroBonus: 0,
+        visionBonus: 0,
+        draftBonus: 0,
+        synergyBonus: 0,
+        potential: target.potential,
+        matchHistory: ['V', 'D', 'V'],
+        championMastery: {},
+      },
+    }))
+
+    setTimeNotification(`Signature: ${target.pseudo} (${target.role}) rejoint l'equipe pour ${formatBudgetShort(target.askingPrice)}.`)
+  }
+
+  const handleLaunchScout = () => {
+    // Add a new scouting task to the queue
+    const scoutSeed = stableHash(`scout-${Date.now()}`)
+    const leagues = ['LCK', 'LPL', 'LCS', 'LEC']
+    const roles = ['Top', 'Jungle', 'Mid', 'ADC', 'Support']
+    const newTask = {
+      player: `Prospect-${(scoutSeed % 900) + 100}`,
+      role: roles[scoutSeed % roles.length],
+      league: leagues[scoutSeed % leagues.length],
+      daysRemaining: 3,
+    }
+    setScoutingQueue((previous) => [...previous, newTask].slice(0, 6))
+    setTimeNotification(`Scout lance sur ${newTask.player} (${newTask.role}, ${newTask.league}).`)
   }
 
   const handleApplyWeeklyTraining = ({ players }) => {
@@ -6533,11 +7515,13 @@ function App() {
       baseRosterProfiles,
       approachId: selectedApproachId,
       draftScore: draftScore.score,
+      seriesType: match.seriesType ?? 'BO1',
       mentalCoachLevel,
       isHighPressureMatch: opponentPowerForMatch >= 86,
       aggressivite,
       rythmeJeu,
       prioriteObjectifs,
+      metaPatchInfluence: metaPatchState,
     })
 
     const rawProjectedWithDraft = computeProjectedWinRateWithDraft(
@@ -6590,6 +7574,13 @@ function App() {
       postMatchBreakdown,
       analystLevel,
       currentEventIndex: 0,
+      decisionAdjustments: {},
+      games: simulation.games ?? [],
+      seriesRows: simulation.seriesRows ?? [],
+      seriesScore: simulation.seriesScore ?? (simulation.teamWon ? '1-0' : '0-1'),
+      teamWins: simulation.teamWins ?? (simulation.teamWon ? 1 : 0),
+      enemyWins: simulation.enemyWins ?? (simulation.teamWon ? 0 : 1),
+      activeCombos: (simulation.games?.[0]?.activeCombos) ?? [],
     }
   }
 
@@ -6619,15 +7610,139 @@ function App() {
       return
     }
 
+    // Apply cumulative decision rewards to the last game's goldDiff - may flip the result.
+    const totalDecisionReward = Object.values(session.decisionAdjustments ?? {}).reduce(
+      (sum, entry) => sum + (entry?.reward ?? 0),
+      0,
+    )
     const finalEvent = session.timeline[session.timeline.length - 1]
-    const goldDiff = finalEvent?.goldDiff ?? 0
-    const isWin = goldDiff >= 0
-    const score =
-      session.match?.seriesType === 'BO1'
-        ? isWin ? '1-0' : '0-1'
-        : isWin
-          ? `${session.finalScoreboard.team.kills > session.finalScoreboard.enemy.kills ? '2-0' : '2-1'}`
-          : `${session.finalScoreboard.enemy.kills > session.finalScoreboard.team.kills ? '0-2' : '1-2'}`
+    const rawGoldDiff = finalEvent?.goldDiff ?? 0
+    const adjustedGoldDiff = rawGoldDiff + totalDecisionReward
+
+    let teamWins = session.teamWins ?? (session.teamWon ? 1 : 0)
+    let enemyWins = session.enemyWins ?? (session.teamWon ? 0 : 1)
+
+    // If the decisions flipped the visible final game, adjust series score accordingly
+    const rawLastGameWonByTeam = rawGoldDiff >= 0
+    const adjustedLastGameWonByTeam = adjustedGoldDiff >= 0
+    if (rawLastGameWonByTeam !== adjustedLastGameWonByTeam) {
+      if (adjustedLastGameWonByTeam) {
+        teamWins += 1
+        enemyWins = Math.max(0, enemyWins - 1)
+      } else {
+        enemyWins += 1
+        teamWins = Math.max(0, teamWins - 1)
+      }
+    }
+
+    const isWin = teamWins > enemyWins
+    const score = `${teamWins}-${enemyWins}`
+
+    // Prize money for this match
+    const stage = session.match?.stage ?? 'Regulier'
+    const prizePool = PRIZE_MONEY_BY_STAGE[stage] ?? PRIZE_MONEY_BY_STAGE.Regulier
+    const prizeMoney = isWin ? prizePool.win : prizePool.loss
+
+    // Track match history for sponsor verification
+    const historyEntry = {
+      matchId: session.matchId,
+      stage,
+      opponent: session.opponentName,
+      isWin,
+      dateKey: session.match?.dateKey ?? toDateKey(currentDate),
+      score,
+    }
+    setMatchHistory((previous) => [historyEntry, ...previous].slice(0, 200))
+
+    // Sponsor bonus verification based on running winrate
+    const updatedHistory = [historyEntry, ...matchHistory].slice(0, 200)
+    const totalMatches = updatedHistory.length
+    const totalWins = updatedHistory.filter((entry) => entry.isWin).length
+    const runningWinrate = totalMatches > 0 ? Math.round((totalWins / totalMatches) * 100) : 0
+
+    let sponsorBonusTotal = 0
+    const sponsorBonusEntries = []
+    setSponsorContracts((previous) =>
+      previous.map((sponsor) => {
+        if (sponsor.status !== 'active' || sponsor.bonusPaid) {
+          return sponsor
+        }
+        if (sponsor.target?.type === 'winrate' && totalMatches >= 6 && runningWinrate >= sponsor.target.value) {
+          sponsorBonusTotal += sponsor.target.bonus ?? 0
+          sponsorBonusEntries.push({
+            id: `sponsor-bonus-${sponsor.id}-${Date.now()}`,
+            label: `Bonus ${sponsor.label} (winrate ${runningWinrate}%)`,
+            amount: sponsor.target.bonus ?? 0,
+            date: currentDate.toISOString(),
+          })
+          return { ...sponsor, bonusPaid: true }
+        }
+        return sponsor
+      }),
+    )
+
+    setBudget((previous) => previous + prizeMoney + sponsorBonusTotal)
+    setFinanceLedger((previous) => [
+      ...sponsorBonusEntries,
+      {
+        id: `match-${session.matchId}-${Date.now()}`,
+        label: `${isWin ? 'Prime victoire' : 'Prime participation'} ${stage} vs ${session.opponentName}`,
+        amount: prizeMoney,
+        date: currentDate.toISOString(),
+      },
+      ...previous,
+    ].slice(0, 40))
+
+    // Grant mastery + permanent progression to each active roster player
+    setRosterProfiles((previous) => {
+      const next = { ...previous }
+      const teamRowsToApply = session.seriesRows?.length ? session.seriesRows : session.teamRows
+      teamRowsToApply.forEach((row) => {
+        if (!row.playerId) return
+        const existing = next[row.playerId] ?? baseRosterProfiles[row.playerId]
+        if (!existing) return
+
+        const updated = {
+          ...existing,
+          championMastery: { ...(existing.championMastery ?? {}) },
+        }
+
+        // Champion mastery gain based on performance
+        const pickKey = session.draftState?.playerPicks?.[row.role]
+        if (pickKey) {
+          const currentMastery = updated.championMastery[pickKey] ?? 30
+          const masteryGain = (row.rating ?? 6.5) >= 8 ? 3 : (row.rating ?? 6.5) >= 7 ? 2 : 1
+          updated.championMastery[pickKey] = clamp(currentMastery + masteryGain, 0, 100)
+        }
+
+        // Permanent progression (only rare small gains, capped by potential)
+        const potentialCap = updated.potential ?? POTENTIAL_BAND.high
+        const progressionChance = (row.rating ?? 6.5) >= 8 ? 0.45 : (row.rating ?? 6.5) >= 7 ? 0.2 : 0.05
+        const progressionSeed = stableHash(`${row.playerId}-${session.matchId}-progression`) % 100
+        if (progressionSeed < progressionChance * 100) {
+          const statToGrow = ['teamfightBonus', 'mechanicsBonus', 'macroBonus'][progressionSeed % 3]
+          const currentBonus = updated[statToGrow] ?? 0
+          if (currentBonus < potentialCap - 70) {
+            updated[statToGrow] = currentBonus + 1
+          }
+        }
+
+        // Morale / condition impact
+        if ((row.rating ?? 6.5) >= 8) {
+          updated.moral = increaseMorale(updated.moral)
+        } else if ((row.rating ?? 6.5) <= 5.5) {
+          updated.moral = decreaseMorale(updated.moral)
+        }
+        updated.condition = clamp((updated.condition ?? 72) - 8, 20, 100)
+
+        // Match history
+        const history = ['V', 'D'].filter(Boolean)
+        updated.matchHistory = [isWin ? 'V' : 'D', ...(existing.matchHistory ?? history).slice(0, 3)]
+
+        next[row.playerId] = updated
+      })
+      return next
+    })
 
     setLeagueSchedules((previous) => {
       const current = previous[scheduleKey] ?? generatedSchedule
@@ -6665,6 +7780,8 @@ function App() {
       finalScoreboard: session.finalScoreboard,
       teamRows: session.teamRows,
       enemyRows: session.enemyRows,
+      seriesRows: session.seriesRows ?? [],
+      games: session.games ?? [],
       mvp: session.mvp,
       defeatReason: session.defeatReason,
       teamWon: isWin,
@@ -6676,11 +7793,15 @@ function App() {
       draftScoreExplanation: session.draftScoreExplanation,
       postMatchBreakdown: session.postMatchBreakdown,
       analystLevel: session.analystLevel,
+      prizeMoney,
+      seriesScore: score,
+      activeCombos: session.activeCombos ?? [],
+      decisionAdjustments: session.decisionAdjustments ?? {},
     }
 
     setLastMatchReport(report)
     setTimeNotification(
-      `Live termine vs ${session.opponentName}: ${isWin ? 'Victoire' : 'Defaite'} (${score}). MVP: ${session.mvp?.playerName ?? 'N/A'}.`,
+      `Live termine vs ${session.opponentName}: ${isWin ? 'Victoire' : 'Defaite'} (${score}). MVP: ${session.mvp?.playerName ?? 'N/A'}. Prime: ${formatBudgetShort(prizeMoney)}.`,
     )
 
     setMatchApproachById((previous) => {
@@ -6719,6 +7840,12 @@ function App() {
       return
     }
 
+    const currentEvent = liveMatchSession.timeline[liveMatchSession.currentEventIndex]
+    // Block auto-advance when the current event has a pending decision the coach has not answered.
+    if (currentEvent?.decision && !liveMatchSession.decisionAdjustments?.[currentEvent.decision.id]) {
+      return
+    }
+
     const maxIndex = liveMatchSession.timeline.length - 1
     const nextIndex = Math.min(maxIndex, liveMatchSession.currentEventIndex + 1)
 
@@ -6731,6 +7858,28 @@ function App() {
         currentEventIndex: nextIndex,
       }
     })
+  }
+
+  const handleResolveLiveDecision = (decisionId, option) => {
+    if (!liveMatchSession || !decisionId || !option) {
+      return
+    }
+
+    setLiveMatchSession((previous) => {
+      if (!previous) return previous
+      const nextAdjustments = {
+        ...(previous.decisionAdjustments ?? {}),
+        [decisionId]: { optionId: option.id, reward: option.reward, commentary: option.commentary },
+      }
+      const maxIndex = previous.timeline.length - 1
+      const nextIndex = Math.min(maxIndex, previous.currentEventIndex + 1)
+      return {
+        ...previous,
+        decisionAdjustments: nextAdjustments,
+        currentEventIndex: nextIndex,
+      }
+    })
+    setTimeNotification(`Decision prise: ${option.label}. ${option.commentary}`)
   }
 
   const handleSkipLiveSimulation = () => {
@@ -6818,19 +7967,34 @@ function App() {
             championMastery: { ...(existing.championMastery ?? {}) },
           }
 
+          // Compute ceiling above current ability for training gains, capped by potential
+          const baseStat = (player.laning + player.teamfight + player.macro + player.mechanics) / 4
+          const potentialCap = updated.potential ?? POTENTIAL_BAND.high
+          const room = Math.max(0, potentialCap - baseStat)
+          // Max total bonus a player can accumulate on a stat before being considered "capped"
+          const softCap = Math.max(0, Math.round(room))
+
+          const applyStatGain = (statKey, amount) => {
+            const current = updated[statKey] ?? 0
+            if (current >= softCap) {
+              return  // player has hit their potential ceiling
+            }
+            updated[statKey] = current + amount
+          }
+
           activities.forEach((activityId, slotIndex) => {
             const randomSeed = stableHash(`${playerId}-${todayKey}-${slotIndex}-${activityId}`)
 
             if (activityId === 'scrims') {
               updated.condition = clamp(updated.condition - 15, 0, 100)
-              updated.teamfightBonus = (updated.teamfightBonus ?? 0) + 1
+              applyStatGain('teamfightBonus', 1)
               scrimCount += 1
               return
             }
 
             if (activityId === 'soloq') {
               updated.condition = clamp(updated.condition - 10, 0, 100)
-              updated.mechanicsBonus = (updated.mechanicsBonus ?? 0) + 1
+              applyStatGain('mechanicsBonus', 1)
               const rawDelta = SOLOQ_TUNING.active.randomFloor + (randomSeed % SOLOQ_TUNING.active.randomRange)
               const mechanicsScore = clamp(Math.round((player.mechanics ?? 70) / 5), 1, 20)
               const mentalScore = clamp(updated.mental ?? player.mental ?? 14, 1, 20)
@@ -6856,14 +8020,14 @@ function App() {
 
             if (activityId === 'vod_review') {
               updated.condition = clamp(updated.condition - 5, 0, 100)
-              updated.macroBonus = (updated.macroBonus ?? 0) + 1
-              updated.visionBonus = (updated.visionBonus ?? 0) + 1
+              applyStatGain('macroBonus', 1)
+              applyStatGain('visionBonus', 1)
               return
             }
 
             if (activityId === 'theorycrafting') {
               updated.condition = clamp(updated.condition - 5, 0, 100)
-              updated.draftBonus = (updated.draftBonus ?? 0) + 2
+              applyStatGain('draftBonus', 2)
               const keys = Object.keys(updated.championMastery)
                 .sort((a, b) => (updated.championMastery[b] ?? 0) - (updated.championMastery[a] ?? 0))
                 .slice(0, 3)
@@ -6969,15 +8133,208 @@ function App() {
           daysRemaining: Math.max(0, task.daysRemaining - dailyProgress),
         }
       })
-      const finishedScout = updatedScouting.find((task, index) => task.daysRemaining === 0 && scoutingQueue[index].daysRemaining > 0)
-      setScoutingQueue(updatedScouting)
+      const finishedScouts = updatedScouting.filter((task, index) => task.daysRemaining === 0 && scoutingQueue[index].daysRemaining > 0)
+      const finishedScout = finishedScouts[0] ?? null
+      setScoutingQueue(updatedScouting.filter((task) => task.daysRemaining > 0))
+
+      // Convert finished scouts into real market prospects
+      if (finishedScouts.length > 0) {
+        setTransferMarket((previous) => {
+          const newProspects = finishedScouts.map((task) => {
+            const seed = stableHash(`prospect-${task.player}-${task.league}`)
+            const roleBase = {
+              Top: { laning: 13, teamfight: 13, macro: 13, mechanics: 13, mental: 13 },
+              Jungle: { laning: 11, teamfight: 14, macro: 14, mechanics: 14, mental: 14 },
+              Mid: { laning: 14, teamfight: 14, macro: 13, mechanics: 15, mental: 13 },
+              ADC: { laning: 14, teamfight: 15, macro: 12, mechanics: 15, mental: 12 },
+              Support: { laning: 11, teamfight: 13, macro: 14, mechanics: 12, mental: 14 },
+            }[task.role] ?? { laning: 13, teamfight: 13, macro: 13, mechanics: 13, mental: 13 }
+
+            // Random roll on top of base (-2 to +4)
+            const roll = (key, offset) => clamp(roleBase[key] + ((seed >>> offset) % 7) - 2, 5, 20)
+            const stats = {
+              laning: roll('laning', 0),
+              teamfight: roll('teamfight', 4),
+              macro: roll('macro', 8),
+              mechanics: roll('mechanics', 12),
+              mental: roll('mental', 16),
+            }
+
+            const mainStat = (stats.laning + stats.teamfight + stats.macro + stats.mechanics) / 4
+            // Prospects are unknown-quantity rookies: cheaper but hidden potential
+            const askingPrice = Math.round(450_000 + mainStat * 40_000)
+            const age = 17 + (seed % 5)
+            const potentialRoll = (seed >>> 8) % 100
+            let potential
+            if (age <= 19) {
+              potential = potentialRoll < 30 ? POTENTIAL_BAND.elite : potentialRoll < 70 ? POTENTIAL_BAND.high : POTENTIAL_BAND.mid
+            } else {
+              potential = potentialRoll < 15 ? POTENTIAL_BAND.elite : potentialRoll < 55 ? POTENTIAL_BAND.high : POTENTIAL_BAND.mid
+            }
+
+            return {
+              id: `prospect-${seed}`,
+              pseudo: task.player,
+              realName: task.player,
+              role: task.role,
+              league: `${task.league} SoloQ`,
+              source: 'scout',
+              age,
+              stats,
+              statsPreview: {
+                laning: stats.laning,
+                teamfight: stats.teamfight,
+                mechanics: stats.mechanics,
+              },
+              signatureChampions: [],
+              askingPrice,
+              potential,
+              // Head scout level reveals potential more precisely
+              revealedPotential: headScoutLevel >= 3 ? potential : null,
+              signed: false,
+            }
+          })
+          return [...previous, ...newProspects].slice(0, 14)
+        })
+      }
 
       let patchNotice = ''
+      let financeNotice = ''
       if (nextDate.getDate() === 1) {
         const patchNumber = Number(metaPatch.split('.').pop() ?? '1')
         const nextPatch = `14.${patchNumber + 1}`
         setMetaPatch(nextPatch)
-        patchNotice = `Patch note detecte: meta mise a jour vers ${nextPatch}.`
+
+        // Rotate meta archetype influence
+        const archetypeSeed = stableHash(`${nextPatch}-archetype`)
+        const boostedArchetype = META_PATCH_ARCHETYPES[archetypeSeed % META_PATCH_ARCHETYPES.length]
+        const nerfedArchetype =
+          META_PATCH_ARCHETYPES[(archetypeSeed >>> 4) % META_PATCH_ARCHETYPES.length] === boostedArchetype
+            ? META_PATCH_ARCHETYPES[(archetypeSeed >>> 2) % META_PATCH_ARCHETYPES.length]
+            : META_PATCH_ARCHETYPES[(archetypeSeed >>> 4) % META_PATCH_ARCHETYPES.length]
+
+        const boostedChampions = CHAMPIONS_DB
+          .filter((champion) => champion.tags?.includes(boostedArchetype))
+          .slice(0, 4)
+          .map((champion) => champion.id)
+        const nerfedChampions = CHAMPIONS_DB
+          .filter((champion) => champion.tags?.includes(nerfedArchetype))
+          .slice(0, 4)
+          .map((champion) => champion.id)
+
+        const patchEntry = {
+          version: nextPatch,
+          boostedArchetype,
+          nerfedArchetype,
+          boostedChampions,
+          nerfedChampions,
+        }
+        setMetaPatchState(patchEntry)
+        setPatchHistory((previous) => [patchEntry, ...previous].slice(0, 12))
+        patchNotice = `Patch ${nextPatch}: ${boostedArchetype} buff, ${nerfedArchetype} nerf.`
+
+        // Monthly finance: staff cost + salaries deduction + sponsor revenue
+        const totalSalary = baseRosterPlayers.length * DEFAULT_PLAYER_SALARY
+        const staffMonthly = computeStaffMonthlyCost(staffTeam)
+        const monthlyDebitAmount = totalSalary + staffMonthly
+        const sponsorMonthly = sponsorContracts
+          .filter((sponsor) => sponsor.status === 'active')
+          .reduce((sum, sponsor) => sum + (sponsor.monthly ?? 0), 0)
+
+        setBudget((previous) => previous + sponsorMonthly - monthlyDebitAmount)
+        setFinanceLedger((previous) => [
+          {
+            id: `salary-${toDateKey(nextDate)}`,
+            label: `Salaires joueurs (${baseRosterPlayers.length})`,
+            amount: -totalSalary,
+            date: nextDate.toISOString(),
+          },
+          {
+            id: `staff-${toDateKey(nextDate)}`,
+            label: 'Salaires staff',
+            amount: -staffMonthly,
+            date: nextDate.toISOString(),
+          },
+          {
+            id: `sponsors-${toDateKey(nextDate)}`,
+            label: 'Revenus sponsors',
+            amount: sponsorMonthly,
+            date: nextDate.toISOString(),
+          },
+          ...previous,
+        ].slice(0, 40))
+
+        financeNotice = `Mois clos: sponsors ${formatBudgetShort(sponsorMonthly)}, couts ${formatBudgetShort(-monthlyDebitAmount)}.`
+
+        // Board objective evaluation - check on the 1st of each month for any completable objective
+        const currentLeagueStandings = getLeagueStandings(selectedLeagueId) ?? []
+        const myRankEntry = currentLeagueStandings.findIndex((team) => team.name === activeTeamName) + 1
+        const myRank = myRankEntry > 0 ? myRankEntry : currentLeagueStandings.length
+
+        const currentStageHistory = matchHistory.filter((entry) => entry.stage === 'Printemps' || entry.stage === 'Ete' || entry.stage === 'Regulier')
+        const completedMatches = currentStageHistory.length
+        const wins = currentStageHistory.filter((entry) => entry.isWin).length
+        const currentWinrate = completedMatches > 0 ? Math.round((wins / completedMatches) * 100) : 0
+
+        const monthNumber = nextDate.getMonth() + 1
+        const isEndOfSpring = monthNumber === 5  // Spring ends around April/May
+        const isEndOfSummer = monthNumber === 9  // Summer ends around August/September
+
+        let objectiveBonus = 0
+        const objectiveEntries = []
+        setBoardObjectives((previous) =>
+          previous.map((objective) => {
+            if (objective.status !== 'pending') return objective
+
+            let completed = false
+            let failed = false
+
+            if (objective.stage === 'Printemps' && isEndOfSpring) {
+              completed = myRank > 0 && myRank <= (objective.minRank ?? 4)
+              failed = !completed
+            } else if (objective.stage === 'Ete' && isEndOfSummer) {
+              completed = myRank > 0 && myRank <= (objective.minRank ?? 2)
+              failed = !completed
+            } else if (objective.minWinrate && completedMatches >= 8) {
+              if (currentWinrate >= objective.minWinrate) {
+                completed = true
+              }
+            }
+
+            if (completed) {
+              objectiveBonus += objective.reward ?? 0
+              objectiveEntries.push({
+                id: `board-${objective.id}-${Date.now()}`,
+                label: `Objectif board: ${objective.label}`,
+                amount: objective.reward ?? 0,
+                date: nextDate.toISOString(),
+              })
+              return { ...objective, status: 'done' }
+            }
+            if (failed) {
+              return { ...objective, status: 'failed' }
+            }
+            return objective
+          }),
+        )
+
+        if (objectiveBonus > 0) {
+          setBudget((previous) => previous + objectiveBonus)
+          setFinanceLedger((previous) => [...objectiveEntries, ...previous].slice(0, 40))
+          financeNotice += ` +${formatBudgetShort(objectiveBonus)} objectifs board.`
+        }
+
+        // Bankruptcy check - warn on the 1st of each month if budget post-debit would be catastrophic
+        const projectedBudget = budget + sponsorMonthly - monthlyDebitAmount + objectiveBonus
+        if (projectedBudget < -1_000_000) {
+          setGameOver({
+            reason: 'bankruptcy',
+            balance: projectedBudget,
+            dateKey: toDateKey(nextDate),
+          })
+        } else if (projectedBudget < 0) {
+          financeNotice += ` ATTENTION: decouvert ${formatBudgetShort(projectedBudget)}.`
+        }
       }
 
       const nextDateKey = toDateKey(nextDate)
@@ -7010,7 +8367,7 @@ function App() {
         : ''
 
       const summaryNotice =
-        `${patchNotice} ${scoutingNotice} ${matchNotice}`.trim() ||
+        `${patchNotice} ${financeNotice} ${scoutingNotice} ${matchNotice}`.trim() ||
         `Jour avance au ${formatDateLong(nextDate)}. Slots appliques: ${activities.join(' + ')} (SoloQ: ${soloQCount}).`
 
       setCurrentDate(nextDate)
@@ -7143,6 +8500,7 @@ function App() {
         onAdvance={handleAdvanceLiveSimulation}
         onSkip={handleSkipLiveSimulation}
         onFinish={handleFinishLiveSimulation}
+        onResolveDecision={handleResolveLiveDecision}
       />
     ),
     'match-result': (
@@ -7156,12 +8514,23 @@ function App() {
       <RecrutementPage
         staffTeam={staffTeam}
         onUpgradeStaff={handleUpgradeStaff}
+        transferMarket={transferMarket}
+        onSignPlayer={handleSignPlayer}
+        budget={budget}
+        scoutingQueue={scoutingQueue}
+        onLaunchScout={handleLaunchScout}
+        headScoutLevel={headScoutLevel}
       />
     ),
     'staff-finances': (
       <StaffFinancesPage
         staffTeam={staffTeam}
         staffMonthlyCost={staffMonthlyCost}
+        budget={budget}
+        financeLedger={financeLedger}
+        sponsorContracts={sponsorContracts}
+        boardObjectives={boardObjectives}
+        playerCount={baseRosterPlayers.length}
       />
     ),
     'data-hub': (
@@ -7232,6 +8601,30 @@ function App() {
             {pages[activePage]}
           </section>
         </div>
+
+        {gameOver ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-[color:rgba(17,20,22,0.92)] backdrop-blur-sm">
+            <div className="w-full max-w-md rounded border border-red-700 bg-[var(--surface-1)] p-6">
+              <p className="font-heading text-3xl uppercase tracking-[0.06em] text-red-400">Game Over</p>
+              <p className="mt-2 text-sm text-[var(--text-soft)]">
+                L'organisation a depose le bilan: decouvert de {formatBudgetShort(gameOver.balance)}.
+                Les sponsors se retirent, les joueurs rejoignent d'autres equipes. Tu es vire par le board.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setGameOver(null)
+                  setBudget(SEASON_START_BUDGET)
+                  setFinanceLedger([])
+                  setCurrentDate(new Date('2026-01-01T00:00:00'))
+                }}
+                className="mt-4 w-full rounded border border-[var(--accent)] bg-[color:rgba(200,170,110,0.18)] px-3 py-2 text-xs uppercase tracking-[0.08em] text-[var(--text-main)] hover:bg-[color:rgba(200,170,110,0.28)]"
+              >
+                Recommencer une saison
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         {isProcessing ? (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-[color:rgba(17,20,22,0.86)] backdrop-blur-sm">
