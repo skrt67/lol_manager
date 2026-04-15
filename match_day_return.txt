@@ -1,0 +1,321 @@
+      const haystack = `${champion.name} ${champion.id} ${champion.role} ${(champion.tags ?? []).join(' ')}`.toLowerCase()
+      return haystack.includes(normalizedPickSearch)
+    })
+    .sort((a, b) => a.name.localeCompare(b.name))
+  const canGoNext =
+    step === 1
+      ? Boolean(selectedApproach)
+      : step === 2
+        ? selectedBans.length >= requiredBanCount
+        : step === 3
+          ? (isDraftOrderComplete || isWaitingSecondBanPhase)
+          : false
+  const nextBluePickRole = currentBlueRoles.find((role) => !playerPicks[role]) ?? currentBlueRoles[0] ?? null
+
+  return (
+    <div className="grid gap-4">
+      <div className="space-y-4">
+        <Panel title="Pre-Match Briefing" subtitle={`Jour de match - ${formatDateLong(currentDate)}`}>
+          <div className="rounded border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2 text-sm text-[var(--warn-text)]">
+            Match imminent contre <span className="font-semibold">{match.opponent}</span>.
+          </div>
+
+          <div className="mt-2 rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2 text-xs text-[var(--text-soft)]">
+            Segment: <span className="font-semibold text-[var(--text-main)]">{match.stage ?? 'Saison reguliere'}</span> | Format: <span className="font-semibold text-[var(--text-main)]">{match.seriesType ?? 'BO3'}</span>
+            {match.stake ? ` | Enjeu: ${match.stake}` : ''}
+          </div>
+
+          <div className="mt-3 grid grid-cols-4 gap-2">
+            {[
+              { id: 1, label: 'Briefing' },
+              { id: 2, label: 'Bans' },
+              { id: 3, label: 'Picks' },
+                { id: 4, label: 'Swap' },
+            ].map((entry) => (
+              <div
+                key={entry.id}
+                className={`rounded border px-2 py-1.5 text-center text-[10px] uppercase tracking-[0.08em] ${
+                  step === entry.id
+                    ? 'border-cyan-400 bg-cyan-500/20 text-cyan-100'
+                    : 'border-[var(--border-soft)] bg-[var(--surface-2)] text-[var(--text-muted)]'
+                }`}
+              >
+                {entry.label}
+              </div>
+            ))}
+          </div>
+
+          {step === 1 ? (
+            <>
+              <div className="mt-3 space-y-2">
+                {approachOptions.map((approach) => {
+                  const isSelected = selectedApproach.id === approach.id
+                  return (
+                    <button
+                      key={approach.id}
+                      type="button"
+                      onClick={() => onSelectApproach(approach.id)}
+                      className={`w-full rounded border px-3 py-2 text-left transition ${
+                        isSelected
+                          ? 'border-[var(--accent)] bg-[color:rgba(200,170,110,0.16)]'
+                          : 'border-[var(--border-soft)] bg-[var(--surface-2)] hover:border-[var(--accent)]'
+                      }`}
+                    >
+                      <p className="text-sm font-semibold text-[var(--text-main)]">{approach.label}</p>
+                      <p className="text-xs text-[var(--text-soft)]">{approach.summary}</p>
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div className="mt-3 grid gap-2 text-sm text-[var(--text-soft)] md:grid-cols-2">
+                <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
+                  Synergie equipe: <span className="font-semibold text-[var(--text-main)]">{synergy}%</span>
+                </p>
+                <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
+                  Bonus draft: <span className="font-semibold text-[var(--text-main)]">+{draftBonus}</span>
+                </p>
+                <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
+                  Focus joueur: <span className="font-semibold text-[var(--text-main)]">{focusJoueur}</span>
+                </p>
+                <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
+                  Priorite objectifs: <span className="font-semibold text-[var(--text-main)]">{prioriteObjectifs}</span>
+                </p>
+              </div>
+
+              <div className="mt-3 rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2 text-xs text-[var(--text-soft)]">
+                Plan actif: <span className="font-semibold text-[var(--text-main)]">{selectedApproach.label}</span> - {selectedApproach.summary}
+              </div>
+            </>
+          ) : null}
+
+                    {(step === 2 || step === 3) ? (
+            <div className="absolute inset-0 z-50 flex h-full w-full flex-col bg-[#050505] text-white">
+              {/* Top Banner */}
+              <div className="flex h-[72px] shrink-0 items-center justify-between border-b border-gray-800 bg-[#0a0a0c] px-6 shadow-md">
+                <div className="flex flex-1 items-center gap-6">
+                  <div className="text-2xl font-bold uppercase tracking-wider text-blue-400">{match.player_team}</div>
+                  <div className="flex gap-2">
+                    {Array.from({ length: 5 }).map((_, i) => {
+                      const banKey = selectedBans[i]
+                      const champ = CHAMPIONS_DB.find(c => toChampionKey(c) === banKey)
+                      const img = champ ? getChampionImageUrl(champ) : null
+                      return (
+                        <div key={'bb'+i} className="flex h-10 w-10 items-center justify-center overflow-hidden rounded border border-gray-700 bg-gray-900 border-b-2 border-b-red-600">
+                          {img ? (
+                            <div className="relative h-full w-full">
+                              <img src={img} className="h-full w-full object-cover grayscale brightness-50" />
+                              <div className="absolute inset-0 flex items-center justify-center">
+                                <div className="h-[2px] w-full rotate-45 bg-[#c8aa6e]"></div>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex flex-col items-center justify-center -mt-2">
+                  <div className="text-xl font-bold tracking-[0.1em] text-white">PHASE DE DRAFT</div>
+                  <div className="text-[12px] uppercase tracking-widest text-[#c8aa6e] bg-[#1e1e1e] border border-[#c8aa6e]/30 px-4 py-1 rounded-full mt-1">
+                    {step === 2 ? 'PHASE DE BANS' : 'PHASE DE PICKS'}
+                  </div>
+                  <div className="mt-1 text-[10px] uppercase tracking-wider text-gray-400">
+                    {step === 2 ? currentBanTurnLabel : draftTurnLabel}
+                  </div>
+                  {isWaitingSecondBanPhase ? (
+                    <div className="text-[10px] uppercase tracking-wider text-amber-400">Attente de la 2eme phase de bans</div>
+                  ) : null}
+                </div>
+
+                <div className="flex flex-1 items-center justify-end gap-6">
+                  <div className="flex gap-2">
+                    {Array.from({ length: 5 }).map((_, i) => {
+                      const banKey = enemyDraftBanKeys[i]
+                      const champ = CHAMPIONS_DB.find(c => toChampionKey(c) === banKey)
+                      const img = champ ? getChampionImageUrl(champ) : null
+                      return (
+                        <div key={'rb'+i} className="flex h-10 w-10 items-center justify-center overflow-hidden rounded border border-gray-700 bg-gray-900 border-b-2 border-b-red-600">
+                          {img ? (
+                            <div className="relative h-full w-full">
+                              <img src={img} className="h-full w-full object-cover grayscale brightness-50" />
+                              <div className="absolute inset-0 flex items-center justify-center">
+                                <div className="h-[2px] w-full -rotate-45 bg-[#c8aa6e]"></div>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <div className="text-2xl font-bold uppercase tracking-wider text-red-500">{match.opponent}</div>
+                </div>
+              </div>
+
+              {/* Main Arena */}
+              <div className="relative flex flex-1 overflow-hidden bg-[url('https://ddragon.leagueoflegends.com/cdn/img/champion/splash/Aatrox_0.jpg')] bg-cover bg-center before:absolute before:inset-0 before:bg-black/95">
+                
+                {/* Left Side (Blue) */}
+                <div className="relative z-10 flex w-[300px] flex-col justify-around bg-gradient-to-r from-black/100 via-black/80 to-transparent p-4">
+                  {DRAFT_ROLES.map(role => {
+                    const champKey = draftState?.playerPicks?.[role]
+                    const champ = CHAMPIONS_DB.find(c => toChampionKey(c) === champKey)
+                    const isPickingRow = step === 3 && currentBlueRoles.includes(role)
+                    return (
+                      <div key={'blue-'+role} className={`relative flex h-[16vh] overflow-hidden rounded-md border-2 ${isPickingRow ? 'border-[#c8aa6e] shadow-[0_0_15px_rgba(200,170,110,0.6)] animate-pulse' : 'border-blue-900/40 bg-gray-900/40'}`}>
+                         {champ ? (
+                           <img src={`https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${CHAMPION_IMAGE_ID_OVERRIDES[champ.id] ?? champ.id}_0.jpg`} className="absolute inset-0 h-full w-full object-cover opacity-80 mix-blend-screen" />
+                         ) : null}
+                         <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent" />
+                         <div className="absolute bottom-2 left-3">
+                           <div className="text-[10px] font-bold uppercase tracking-widest text-[#c8aa6e] drop-shadow-md">{role}</div>
+                           <div className="text-lg font-black text-white drop-shadow-md">{champ ? champ.name : (isPickingRow ? 'SÉLECTION...' : 'EN ATTENTE')}</div>
+                         </div>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* Center / Roster Select */}
+                <div className="relative z-10 flex flex-1 flex-col items-center justify-end pb-8">
+                   <div className="flex w-full max-w-4xl flex-col gap-3 rounded-xl border border-gray-800 bg-black/80 p-5 shadow-2xl backdrop-blur-md">
+                     
+                     <div className="flex items-center justify-between">
+                       <span className="text-sm font-bold uppercase tracking-widest text-[#c8aa6e]">
+                        {step === 2 ? 'Phase de Bannissement' : (currentBlueRoles.length > 0 ? `À vous ! (${currentBlueRoles.join(', ')})` : 'Tour Adversaire')}
+                       </span>
+                       <div className="flex gap-3">
+                         {step > 1 && (
+                            <button type="button" onClick={onPrevStep} className="text-xs uppercase text-gray-400 hover:text-white transition-colors">Retour</button>
+                         )}
+                         <button
+                           type="button"
+                           onClick={onNextStep}
+                           disabled={!canGoNext}
+                           className={`rounded px-4 py-1.5 text-xs font-bold uppercase tracking-wider transition-all ${canGoNext ? 'bg-[#c8aa6e] text-black shadow-[0_0_10px_rgba(200,170,110,0.5)] hover:bg-[#d4b982]' : 'cursor-not-allowed bg-gray-800 text-gray-500'}`}
+                         >
+                            {step === 3 && isWaitingSecondBanPhase ? 'Passer aux bans 2' : 'Valider la phase'}
+                         </button>
+                       </div>
+                     </div>
+
+                     {step === 3 && nextBluePickRole ? (
+                       <div className="text-xs uppercase tracking-[0.08em] text-gray-300">
+                         Role a lock maintenant: <span className="font-semibold text-[#c8aa6e]">{nextBluePickRole}</span>
+                       </div>
+                     ) : null}
+
+                     <div className="flex flex-wrap items-center gap-2">
+                       {step === 2 ? (
+                         <select
+                           value={banRoleFilter}
+                           onChange={(event) => setBanRoleFilter(event.target.value)}
+                           className="rounded border border-gray-700 bg-gray-900 px-2 py-1.5 text-xs uppercase tracking-wider text-gray-200"
+                         >
+                           <option value="ALL">Tous les roles</option>
+                           {DRAFT_ROLES.map((role) => (
+                             <option key={`filter-${role}`} value={role}>{role}</option>
+                           ))}
+                         </select>
+                       ) : null}
+                       <input
+                         type="text"
+                         value={step === 2 ? banSearch : pickSearch}
+                         onChange={(event) => {
+                           if (step === 2) {
+                             setBanSearch(event.target.value)
+                           } else {
+                             setPickSearch(event.target.value)
+                           }
+                         }}
+                         placeholder={step === 2 ? 'Rechercher un ban...' : 'Rechercher un pick...'}
+                         className="min-w-[220px] flex-1 rounded border border-gray-700 bg-gray-900 px-2 py-1.5 text-xs text-gray-100 placeholder:text-gray-500"
+                       />
+                     </div>
+                     
+                     <div className="h-[40vh] overflow-y-auto pr-2 custom-scrollbar">
+                       <div className="grid grid-cols-8 gap-2">
+                         {(step === 2 ? allChampionBanOptions : allChampionPickOptions).map(champion => {
+                           const img = getChampionImageUrl(champion)
+                           const isComfort = comfortChampionIds.has(champion.id)
+                           
+                           const isBanned = selectedBans.includes(toChampionKey(champion)) || enemyDraftBanKeys.includes(toChampionKey(champion))
+                           const isPicked = Object.values(playerPicks).includes(toChampionKey(champion)) || Object.values(enemyPicks).includes(toChampionKey(champion))
+                           const isLocked = isBanned || isPicked
+
+                           return (
+                             <button 
+                               key={'opt-'+toChampionKey(champion)} 
+                               disabled={isLocked && step === 3}
+                               onClick={() => {
+                                 if (step === 2) {
+                                   if (selectedBans.includes(toChampionKey(champion))) {
+                                     onToggleDraftBan(match.id, toChampionKey(champion))
+                                   } else if (selectedBans.length < requiredBanCount) {
+                                     onToggleDraftBan(match.id, toChampionKey(champion))
+                                   }
+                                 }
+                                 if (step === 3 && nextBluePickRole) {
+                                   onSelectDraftPick(match.id, nextBluePickRole, toChampionKey(champion))
+                                 }
+                               }}
+                               className={`group relative aspect-square overflow-hidden rounded border transition-all ${isLocked ? 'border-red-900/50 opacity-20 grayscale' : 'border-gray-700 hover:border-[#c8aa6e] hover:scale-105'}`}
+                             >
+                               {img ? <img src={img} className="absolute inset-0 h-full w-full object-cover" /> : null}
+                               {isComfort ? <div className="absolute left-1 top-1 rounded bg-amber-500/85 px-1 py-0.5 text-[8px] font-black uppercase text-black">Comfort</div> : null}
+                               <div className="absolute inset-x-0 bottom-0 bg-black/80 px-1 py-0.5 text-center text-[9px] font-bold text-white group-hover:text-[#c8aa6e] truncate">{champion.name}</div>
+                             </button>
+                           )
+                         })}
+                       </div>
+                     </div>
+                   </div>
+                </div>
+
+                {/* Right Side (Red) */}
+                <div className="relative z-10 flex w-[300px] flex-col justify-around bg-gradient-to-l from-black/100 via-black/80 to-transparent p-4">
+                  {DRAFT_ROLES.map(role => {
+                    const champKey = enemyPicks[role]
+                    const champ = CHAMPIONS_DB.find(c => toChampionKey(c) === champKey)
+                    return (
+                      <div key={'red-'+role} className={`relative flex h-[16vh] overflow-hidden rounded-md border-2 border-red-900/40 bg-gray-900/40`}>
+                         {champ ? (
+                           <img src={`https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${CHAMPION_IMAGE_ID_OVERRIDES[champ.id] ?? champ.id}_0.jpg`} className="absolute inset-0 h-full w-full object-cover opacity-80 mix-blend-screen scale-x-[-1]" />
+                         ) : null}
+                         <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent" />
+                         <div className="absolute bottom-2 right-3 text-right">
+                           <div className="text-[10px] font-bold uppercase tracking-widest text-red-500 drop-shadow-md">{role}</div>
+                           <div className="text-lg font-black text-white drop-shadow-md">{champ ? champ.name : 'EN ATTENTE'}</div>
+                         </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          ) : null}
+          {step === 4 ? (
+            <div className="mt-4 rounded border border-[var(--border-soft)] bg-[var(--surface-2)] p-3 text-sm text-[var(--text-soft)]">
+              <p className="text-[11px] uppercase tracking-[0.08em] text-[var(--text-muted)]">Phase 4 - Swap puis validation</p>
+              <p className="mt-2">Adversaire: <span className="font-semibold text-[var(--text-main)]">{match.opponent}</span></p>
+              <p>Plan: <span className="font-semibold text-[var(--text-main)]">{selectedApproach.label}</span></p>
+              <p>Draft score: <span className="font-semibold text-[var(--text-main)]">{draftScoreCard.score >= 0 ? '+' : ''}{draftScoreCard.score}</span></p>
+              <p>Projection finale: <span className="font-semibold text-[var(--text-main)]">{draftProjectedWinRate}%</span></p>
+
+              <div className="mt-3 rounded border border-[var(--border-soft)] bg-[var(--surface-3)] p-2">
+                <p className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">Swap (double approbation simulee)</p>
+                <div className="mt-2 grid gap-2 md:grid-cols-[1fr_1fr_auto]">
+                  <select
+                    value={swapFromRole}
+                    onChange={(event) => setSwapFromRole(event.target.value)}
+                    className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-2 py-1 text-xs text-[var(--text-main)]"
+                  >
+                    {DRAFT_ROLES.map((role) => (
+                      <option key={`from-${role}`} value={role}>{role}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={swapToRole}
+                    onChange={(event) => setSwapToRole(event.target.value)}
+                    className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-2 py-1 text-xs text-[var(--text-main)]"

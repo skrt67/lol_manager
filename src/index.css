@@ -1,0 +1,132 @@
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+:root {
+  --bg-app: #151819;
+  --surface-1: #1b1f21;
+  --surface-2: #21272a;
+  --surface-3: #2a3236;
+  --border-strong: #384247;
+  --border-soft: #30393d;
+  --text-main: #f1f1eb;
+  --text-soft: #c4c8c8;
+  --text-muted: #97a0a2;
+  --accent: #809b76;
+  --accent-contrast: #172015;
+  --warn-bg: #3a2f22;
+  --warn-border: #665339;
+  --warn-text: #eed7b1;
+  --font-heading: 'Barlow Condensed', sans-serif;
+  --font-body: 'Source Sans 3', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 15% 12%, #232a2f 0%, transparent 35%),
+    radial-gradient(circle at 86% 0%, #222f28 0%, transparent 28%),
+    var(--bg-app);
+  color: var(--text-main);
+  font-family: var(--font-body);
+  letter-spacing: 0.01em;
+}
+
+.font-heading {
+  font-family: var(--font-heading);
+}
+
+.fm-panel {
+  border: 1px solid var(--border-strong);
+  background: var(--surface-1);
+  border-radius: 0.35rem;
+  padding: 0.75rem;
+}
+
+.fm-data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.fm-data-table th,
+.fm-data-table td {
+  border-bottom: 1px solid var(--border-soft);
+  padding: 0.55rem 0.45rem;
+  text-align: left;
+}
+
+.fm-data-table th {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+
+.fm-data-table tr:last-child td {
+  border-bottom: none;
+}
+
+.tier-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid;
+  padding: 0.12rem 0.5rem;
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.tier-badge--t1 {
+  border-color: #9b8452;
+  background: rgba(155, 132, 82, 0.24);
+  color: #e8d8ac;
+}
+
+.tier-badge--t2 {
+  border-color: #7b848e;
+  background: rgba(127, 136, 146, 0.22);
+  color: #d7dde2;
+}
+
+::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3c474c;
+  border-radius: 999px;
+}
+
+::selection {
+  background: #5f7857;
+  color: #f6f8f2;
+}
+
+@keyframes processing-scroll {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.processing-marquee {
+  display: inline-block;
+  min-width: 200%;
+  animation: processing-scroll 8s linear infinite;
+}
