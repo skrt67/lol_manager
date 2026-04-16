@@ -5,6 +5,7 @@ import {
   DollarSign,
   Dumbbell,
   FileSearch,
+  HeartHandshake,
   LayoutDashboard,
   Search,
   Swords,
@@ -18,6 +19,14 @@ import {
   getWorldPowerRanking,
 } from './data/worldLeagues'
 import { CHAMPIONS_DB, NO_LUCK_COMBOS } from './data'
+import {
+  evaluateNoLuckCombos,
+  rankJunglersByPathing,
+  rankMidlanersByMacro,
+  getChampionsByTag,
+  getJunglePathingStats,
+  getMidlaneMacroStats,
+} from './engine/noLuckEngine.js'
 import { LEC_PLAYERS, LFL_PLAYERS } from './data/proPlayers'
 import TrainingView from './components/TrainingView'
 import MatchMap from './components/MatchMap'
@@ -37,6 +46,7 @@ const navGroups = [
     title: 'Gerer',
     items: [
       { id: 'effectif', label: 'Effectif', icon: Users },
+      { id: 'vestiaire', label: 'Vestiaire', icon: HeartHandshake },
       { id: 'staff-finances', label: 'Staff & Finances', icon: DollarSign },
       { id: 'data-hub', label: 'Centre de donnees', icon: BarChart2 },
     ],
@@ -138,6 +148,104 @@ const MATCH_APPROACHES = [
 ]
 
 const DEFAULT_MATCH_APPROACH_ID = 'objective-control'
+
+const TEAMFIGHT_STYLES = [
+  {
+    id: 'front-to-back',
+    label: 'Front-to-back',
+    description: 'Standard: le front line absorbe, les carries frappent de loin. Ideal si un ADC ou mage fed.',
+    icon: '🛡️',
+    bonusRoles: ['ADC', 'Support'],
+    tfMultiplier: 1.12,
+    macroMultiplier: 1.0,
+    mechMultiplier: 0.95,
+    carryCeilingAmp: 1.2,
+  },
+  {
+    id: 'dive-comp',
+    label: 'Dive / Engage',
+    description: 'Les assassins et fighters plongent la backline. Haut risque, haut reward.',
+    icon: '⚔️',
+    bonusRoles: ['Jungle', 'Mid'],
+    tfMultiplier: 0.95,
+    macroMultiplier: 0.9,
+    mechMultiplier: 1.15,
+    carryCeilingAmp: 1.35,
+  },
+  {
+    id: 'split-push',
+    label: 'Split-push',
+    description: 'Evite les 5v5 et cree de la pression laterale. Demande un excellent macro.',
+    icon: '🗺️',
+    bonusRoles: ['Top', 'Mid'],
+    tfMultiplier: 0.8,
+    macroMultiplier: 1.25,
+    mechMultiplier: 1.0,
+    carryCeilingAmp: 0.9,
+  },
+  {
+    id: 'poke-siege',
+    label: 'Poke / Siege',
+    description: 'Controle des zones, poke a distance, siege methodique. Lent mais etouffe.',
+    icon: '🎯',
+    bonusRoles: ['Mid', 'ADC'],
+    tfMultiplier: 0.9,
+    macroMultiplier: 1.15,
+    mechMultiplier: 1.05,
+    carryCeilingAmp: 1.0,
+  },
+]
+
+const DEFAULT_TEAMFIGHT_STYLE_ID = 'front-to-back'
+
+function getTeamfightStyleById(styleId) {
+  return TEAMFIGHT_STYLES.find((style) => style.id === styleId) ?? TEAMFIGHT_STYLES[0]
+}
+
+const LANE_INSTRUCTIONS = {
+  Top: [
+    { id: 'safe', label: 'Play safe', description: 'Farm sous tour, minimise les trades.', laningMod: -0.05, macroMod: 0.05 },
+    { id: 'aggressive', label: 'Trades agressifs', description: 'Force les echanges pour zone le lane.', laningMod: 0.1, macroMod: -0.05 },
+    { id: 'split', label: 'Split-push duty', description: 'Pousse le side lane des que possible.', laningMod: 0, macroMod: 0.12 },
+    { id: 'tp-plays', label: 'TP advantage', description: 'Garde le TP pour creer le nombre.', laningMod: -0.05, macroMod: 0.08 },
+  ],
+  Jungle: [
+    { id: 'farm', label: 'Farm heavy', description: 'Full clear, scaling sur les items.', laningMod: 0, macroMod: 0.05 },
+    { id: 'gank-early', label: 'Gank early', description: 'Pression sur les lanes des le niveau 3.', laningMod: 0.12, macroMod: -0.05 },
+    { id: 'counter-jg', label: 'Counter-jungle', description: 'Envahit les camps adverses.', laningMod: 0.05, macroMod: 0.08 },
+    { id: 'objective', label: 'Objectif focus', description: 'Priorite drakes et herald.', laningMod: 0, macroMod: 0.12 },
+  ],
+  Mid: [
+    { id: 'roam', label: 'Roam heavy', description: 'Push + roam bot/top pour snowball.', laningMod: -0.05, macroMod: 0.12 },
+    { id: 'lane-kingdom', label: 'Lane kingdom', description: 'Domine le 1v1, nie les CS adverses.', laningMod: 0.12, macroMod: -0.05 },
+    { id: 'scaling', label: 'Scaling passif', description: 'Farm safe, attend les items clefs.', laningMod: -0.08, macroMod: 0.05 },
+    { id: 'poke-shove', label: 'Poke et shove', description: 'Poke et push permanent pour creer tempo.', laningMod: 0.05, macroMod: 0.08 },
+  ],
+  ADC: [
+    { id: 'safe-farm', label: 'Safe farm', description: 'Survie et CS, evite les all-in.', laningMod: -0.08, macroMod: 0.05 },
+    { id: 'lane-bully', label: 'Lane dominant', description: 'Pression en lane avec le support.', laningMod: 0.12, macroMod: 0 },
+    { id: 'teamfight', label: 'Teamfight focus', description: 'Positionne pour les fights, pas de risk.', laningMod: 0, macroMod: 0.05 },
+  ],
+  Support: [
+    { id: 'roam-sup', label: 'Roam support', description: 'Aide mid et jungle apres le niveau 6.', laningMod: -0.08, macroMod: 0.12 },
+    { id: 'peel', label: 'Peel carry', description: 'Reste colle au carry pour le proteger.', laningMod: 0, macroMod: 0.05 },
+    { id: 'engage', label: 'Engage initiator', description: 'Cherche les engages pour forcer les fights.', laningMod: 0.08, macroMod: 0.05 },
+  ],
+}
+
+const DEFAULT_LANE_INSTRUCTIONS = {
+  Top: 'aggressive',
+  Jungle: 'gank-early',
+  Mid: 'roam',
+  ADC: 'safe-farm',
+  Support: 'peel',
+}
+
+function getLaneInstructionForRole(role, instructionId) {
+  const options = LANE_INSTRUCTIONS[role] ?? []
+  return options.find((opt) => opt.id === instructionId) ?? options[0] ?? { laningMod: 0, macroMod: 0 }
+}
+
 const MATCH_DAY_STEP_COUNT = 4
 
 const DRAFT_ROLES = ['Top', 'Jungle', 'Mid', 'ADC', 'Support']
@@ -213,6 +321,114 @@ const DEFAULT_STAFF_TEAM = {
   headScout: 0,
   mentalCoach: 0,
 }
+
+// --- Facilities ---
+const FACILITY_CATALOG = {
+  gamingSetup: {
+    label: 'Gaming Setup',
+    description: 'PCs, moniteurs 240Hz, peripheriques. Amplifie les gains SoloQ.',
+    icon: '🖥️',
+    monthlyCost: [0, 5_000, 12_000, 22_000],
+    upgradeCost: [0, 80_000, 180_000, 350_000],
+    trainingBonus: { soloq: [0, 0.15, 0.30, 0.50] },
+  },
+  vodRoom: {
+    label: 'Salle VOD',
+    description: 'Ecrans multi-angles, outil de replay. Amplifie les gains VOD Review.',
+    icon: '🎬',
+    monthlyCost: [0, 4_000, 9_000, 16_000],
+    upgradeCost: [0, 60_000, 140_000, 280_000],
+    trainingBonus: { vod_review: [0, 0.20, 0.40, 0.65] },
+  },
+  scrimRoom: {
+    label: 'Salle de Scrim',
+    description: 'Isolation sonore, setup tournoi. Amplifie les gains de scrims.',
+    icon: '🎧',
+    monthlyCost: [0, 6_000, 14_000, 25_000],
+    upgradeCost: [0, 90_000, 200_000, 400_000],
+    trainingBonus: { scrims: [0, 0.15, 0.30, 0.50] },
+  },
+  performanceCenter: {
+    label: 'Centre de Performance',
+    description: 'Salle de sport, suivi medical. Accelere la recuperation (repos).',
+    icon: '💪',
+    monthlyCost: [0, 5_000, 11_000, 20_000],
+    upgradeCost: [0, 70_000, 160_000, 320_000],
+    trainingBonus: { rest: [0, 0.20, 0.40, 0.65] },
+  },
+}
+
+const DEFAULT_FACILITIES = {
+  gamingSetup: 0,
+  vodRoom: 0,
+  scrimRoom: 0,
+  performanceCenter: 0,
+}
+
+const FACILITY_MAX_LEVEL = 3
+
+function computeFacilityMonthlyCost(facilities) {
+  return Object.entries(FACILITY_CATALOG).reduce((sum, [id, config]) => {
+    const level = clamp(facilities?.[id] ?? 0, 0, FACILITY_MAX_LEVEL)
+    return sum + (config.monthlyCost[level] ?? 0)
+  }, 0)
+}
+
+function getFacilityTrainingMultiplier(facilities, activityId) {
+  let mult = 1
+  Object.entries(FACILITY_CATALOG).forEach(([id, config]) => {
+    const level = clamp(facilities?.[id] ?? 0, 0, FACILITY_MAX_LEVEL)
+    const bonusForActivity = config.trainingBonus?.[activityId]
+    if (bonusForActivity) {
+      mult += bonusForActivity[level] ?? 0
+    }
+  })
+  return mult
+}
+
+// --- Bootcamp ---
+const BOOTCAMP_COST = 250_000
+const BOOTCAMP_DURATION_DAYS = 14
+const BOOTCAMP_TRAINING_MULT = 1.5
+
+// --- Academy ---
+const ACADEMY_ROSTER_SIZE = 3
+const ACADEMY_ROLES = ['Mid', 'ADC', 'Jungle']
+const ACADEMY_NAMES = [
+  { pseudo: 'Frosty', realName: 'Lucas Bernard', nationality: 'France' },
+  { pseudo: 'Blitz', realName: 'Park Jae-won', nationality: 'Coree du Sud' },
+  { pseudo: 'Ember', realName: 'Viktor Petrov', nationality: 'Bulgarie' },
+]
+
+function buildAcademyRoster(teamId) {
+  return ACADEMY_NAMES.map((entry, index) => {
+    const role = ACADEMY_ROLES[index % ACADEMY_ROLES.length]
+    const profileKey = `academy-${teamId}-${entry.pseudo}`
+    const seed = stableHash(profileKey)
+    const age = 17 + (seed % 3)
+    const baseStat = 10 + (seed % 4)
+    return {
+      playerId: profileKey,
+      joueur: entry.pseudo,
+      realName: entry.realName,
+      role,
+      nationality: entry.nationality,
+      isAcademy: true,
+      laning: baseStat * 5,
+      teamfight: (baseStat + 1) * 5,
+      macro: (baseStat - 1) * 5,
+      mechanics: (baseStat + 2) * 5,
+      mental: clamp(12 + (seed % 4), 10, 16),
+      moral: 'Bon',
+      forme: '7.5',
+      contrat: String(CURRENT_SEASON_YEAR + 3),
+      age,
+      potential: seed % 100 < 40 ? POTENTIAL_BAND.elite : POTENTIAL_BAND.high,
+      salary: SALARY_TABLE.low,
+    }
+  })
+}
+
 const DRAFT_PICK_SEQUENCE = [
   { side: 'blue', roles: ['Top'] },
   { side: 'red', roles: ['Top', 'Jungle'] },
@@ -243,6 +459,72 @@ const ROLE_PHASE_WEIGHTS = {
 
 const SEASON_START_BUDGET = 5_200_000
 const DEFAULT_PLAYER_SALARY = 22_000
+
+// --- Contract & Negotiation system ---
+const AGENT_FEE_PERCENT = 0.12
+const SALARY_TABLE = {
+  // Monthly salary by average FM stat (1-20)
+  low: 8_000,      // avg < 12
+  mid: 18_000,     // avg 12-15
+  high: 32_000,    // avg 15-17
+  elite: 55_000,   // avg >= 17
+}
+
+function computePlayerSalary(stats) {
+  if (!stats) return SALARY_TABLE.mid
+  const avg = (stats.laning + stats.teamfight + stats.mechanics + stats.macro + (stats.mental ?? 14)) / 5
+  if (avg >= 17) return SALARY_TABLE.elite
+  if (avg >= 15) return SALARY_TABLE.high
+  if (avg >= 12) return SALARY_TABLE.mid
+  return SALARY_TABLE.low
+}
+
+const CONTRACT_DURATIONS = [1, 2, 3]
+const CURRENT_SEASON_YEAR = 2026
+
+function computeNegotiationResponse(targetId, offerPrice, askingPrice, round, seedExtra = '') {
+  const ratio = offerPrice / Math.max(1, askingPrice)
+  const seed = stableHash(`nego-${targetId}-r${round}-${seedExtra}`)
+  const roll = seed % 100
+
+  // Round 1: accept if >= 92% asking, counter if 75-91%, reject if < 75%
+  // Round 2: accept if >= 85%, counter if 65-84%, reject if < 65%
+  // Round 3: accept if >= 80%, always last chance
+  const acceptThreshold = round === 0 ? 0.92 : round === 1 ? 0.85 : 0.80
+  const rejectThreshold = round === 0 ? 0.75 : round === 1 ? 0.65 : 0
+
+  if (ratio >= acceptThreshold) return { result: 'accepted', counterPrice: offerPrice }
+  if (ratio < rejectThreshold) return { result: 'rejected', counterPrice: null }
+
+  // Counter-offer: somewhere between offer and asking
+  const counterBase = askingPrice * (round === 0 ? 0.95 : round === 1 ? 0.90 : 0.85)
+  const variance = (seed % 11 - 5) * (askingPrice * 0.01)
+  const counterPrice = Math.max(offerPrice + 50_000, Math.round(counterBase + variance))
+  return { result: 'counter', counterPrice }
+}
+
+function getContractEndYear(player) {
+  const raw = player?.contrat ?? player?.contractEnd ?? '2028'
+  return typeof raw === 'number' ? raw : parseInt(raw, 10) || 2028
+}
+
+function isExpiringContract(player) {
+  return getContractEndYear(player) <= CURRENT_SEASON_YEAR
+}
+
+function computeRenewalCost(player, newDuration) {
+  const salary = computePlayerSalary(player.stats ?? {
+    laning: (player.laning ?? 70) / 5,
+    teamfight: (player.teamfight ?? 70) / 5,
+    mechanics: (player.mechanics ?? 70) / 5,
+    macro: (player.macro ?? 70) / 5,
+    mental: player.mental ?? 14,
+  })
+  // Signing bonus = 3 months salary, spread over contract
+  const signingBonus = salary * 3
+  return { monthlySalary: salary, signingBonus, totalCost: signingBonus + salary * newDuration * 12 }
+}
+
 const PRIZE_MONEY_BY_STAGE = {
   'LEC Versus': { win: 15000, loss: 4000 },
   Printemps: { win: 45000, loss: 12000 },
@@ -1286,6 +1568,109 @@ const rapportAdversaire = {
   },
 }
 
+const TRAIT_CATALOG = {
+  leader: {
+    id: 'leader',
+    label: 'Leader',
+    description: 'Stabilise le vestiaire. +1 mental equipe en haute pression.',
+    color: '#c8aa6e',
+  },
+  hothead: {
+    id: 'hothead',
+    label: 'Tete brulee',
+    description: 'Explosif mais instable. +variance early, -1 mental en haute pression.',
+    color: '#e06c75',
+  },
+  mentor: {
+    id: 'mentor',
+    label: 'Mentor',
+    description: 'Accompagne les rookies. +1 mental pour les joueurs <21 ans.',
+    color: '#88c0d0',
+  },
+  scrimgod: {
+    id: 'scrimgod',
+    label: 'Scrim God',
+    description: 'Genie en pratique. +1 macro collectif, -1 en haute pression.',
+    color: '#a3be8c',
+  },
+  quiet: {
+    id: 'quiet',
+    label: 'Discret',
+    description: 'Aucun impact vestiaire, neutre aux traits des autres.',
+    color: '#6b7280',
+  },
+  streaker: {
+    id: 'streaker',
+    label: 'Streaker',
+    description: 'Boost de confiance apres une victoire. +1 teamfight si match precedent gagne.',
+    color: '#d19a66',
+  },
+  workaholic: {
+    id: 'workaholic',
+    label: 'Bourreau de travail',
+    description: 'Apprend plus vite. +20% gains entrainement. Fatigue plus rapidement.',
+    color: '#61afef',
+  },
+  choke: {
+    id: 'choke',
+    label: 'Fragile clutch',
+    description: 'Craque en grands matchs. -2 mental en haute pression (playoffs/internationaux).',
+    color: '#be5046',
+  },
+}
+
+const TRAIT_IDS = Object.keys(TRAIT_CATALOG)
+
+// Chemistry compatibility: each pair returns a bonus (-2 to +2)
+// Leader+Mentor/Quiet/Streaker = great, Leader+Hothead/Choke = clash
+const TRAIT_COMPATIBILITY = {
+  'leader|mentor': 2,
+  'leader|quiet': 1,
+  'leader|streaker': 1,
+  'leader|scrimgod': 1,
+  'leader|hothead': -1,
+  'leader|choke': -1,
+  'mentor|quiet': 1,
+  'mentor|streaker': 1,
+  'mentor|hothead': 1,
+  'mentor|choke': 2,
+  'mentor|scrimgod': 1,
+  'hothead|hothead': -2,
+  'hothead|choke': -2,
+  'hothead|scrimgod': -1,
+  'scrimgod|workaholic': 2,
+  'scrimgod|scrimgod': 1,
+  'workaholic|workaholic': 1,
+  'workaholic|choke': -1,
+  'choke|choke': -2,
+  'streaker|streaker': 1,
+}
+
+function getTraitPairBonus(traitA, traitB) {
+  if (!traitA || !traitB) return 0
+  const [a, b] = [traitA, traitB].sort()
+  return TRAIT_COMPATIBILITY[`${a}|${b}`] ?? 0
+}
+
+function pickTraitsForProfile(profileKey) {
+  const countSeed = stableHash(`${profileKey}-traitcount`) % 100
+  const traitCount = countSeed < 55 ? 1 : countSeed < 90 ? 2 : 0
+  if (traitCount === 0) return []
+
+  const firstSeed = stableHash(`${profileKey}-trait1`)
+  const firstTrait = TRAIT_IDS[firstSeed % TRAIT_IDS.length]
+
+  if (traitCount === 1) return [firstTrait]
+
+  const secondSeed = stableHash(`${profileKey}-trait2`)
+  let secondTrait = TRAIT_IDS[secondSeed % TRAIT_IDS.length]
+  // avoid duplicate
+  if (secondTrait === firstTrait) {
+    secondTrait = TRAIT_IDS[(secondSeed + 1) % TRAIT_IDS.length]
+  }
+  return [firstTrait, secondTrait]
+}
+
 const PLAYER_PROFILE_SEED = {
   Aster: {
     pseudo: 'ASTER',
@@ -1454,11 +1839,102 @@ function buildInitialRosterProfiles(players) {
       potential,
       currentAbility: clamp((player.laning + player.teamfight + player.macro + player.mechanics) / 4, 40, 99),
       matchHistory: seed.matchHistory ?? ['V', 'D', 'V', 'V'],
+      traits: pickTraitsForProfile(profileKey),
+      fatigue: 0,
+      contractEnd: parseInt(player.contrat, 10) || CURRENT_SEASON_YEAR + 2,
+      salary: computePlayerSalary({
+        laning: (player.laning ?? 70) / 5,
+        teamfight: (player.teamfight ?? 70) / 5,
+        mechanics: (player.mechanics ?? 70) / 5,
+        macro: (player.macro ?? 70) / 5,
+        mental: player.mental ?? 14,
+      }),
       championMastery: buildInitialMasteryMap(profileKey, player.role, player.signatureChampions ?? []),
     }
 
     return acc
   }, {})
+}
+
+function getTraitsForPlayer(player, rosterProfiles, baseRosterProfiles) {
+  const profile =
+    rosterProfiles?.[player?.playerId] ?? baseRosterProfiles?.[player?.playerId] ?? null
+  return profile?.traits ?? []
+}
+
+function computeTeamChemistry(roster, rosterProfiles, baseRosterProfiles) {
+  if (!roster?.length) {
+    return { score: 0, duoCores: [], highlights: [] }
+  }
+
+  const rosterByRole = roster.reduce((acc, player) => {
+    acc[player.role] = player
+    return acc
+  }, {})
+
+  const computePairBonus = (playerA, playerB, label) => {
+    if (!playerA || !playerB) return null
+    const traitsA = getTraitsForPlayer(playerA, rosterProfiles, baseRosterProfiles)
+    const traitsB = getTraitsForPlayer(playerB, rosterProfiles, baseRosterProfiles)
+    let pairBonus = 0
+    traitsA.forEach((ta) => {
+      traitsB.forEach((tb) => {
+        pairBonus += getTraitPairBonus(ta, tb)
+      })
+    })
+    return {
+      label,
+      playerA: playerA.pseudo ?? playerA.joueur,
+      playerB: playerB.pseudo ?? playerB.joueur,
+      bonus: pairBonus,
+    }
+  }
+
+  const duoCores = [
+    computePairBonus(rosterByRole.Jungle, rosterByRole.Mid, 'Jungle / Mid'),
+    computePairBonus(rosterByRole.ADC, rosterByRole.Support, 'Bot lane'),
+    computePairBonus(rosterByRole.Top, rosterByRole.Jungle, 'Top / Jungle'),
+  ].filter(Boolean)
+
+  const duoScore = duoCores.reduce((sum, duo) => sum + duo.bonus, 0)
+
+  // Leader bonus: having at least one leader stabilises the room
+  const hasLeader = roster.some((player) => {
+    const traits = getTraitsForPlayer(player, rosterProfiles, baseRosterProfiles)
+    return traits.includes('leader')
+  })
+  const leaderBonus = hasLeader ? 1 : 0
+
+  // Mentor/young synergy
+  let mentorBonus = 0
+  const mentors = roster.filter((player) => {
+    const traits = getTraitsForPlayer(player, rosterProfiles, baseRosterProfiles)
+    return traits.includes('mentor')
+  })
+  if (mentors.length) {
+    const youngPlayers = roster.filter((player) => {
+      const profile = rosterProfiles?.[player.playerId] ?? baseRosterProfiles?.[player.playerId]
+      return (profile?.age ?? 21) <= 20
+    })
+    mentorBonus = Math.min(2, youngPlayers.length)
+  }
+
+  const score = duoScore + leaderBonus + mentorBonus
+
+  const highlights = []
+  if (hasLeader) highlights.push('Leader dans le vestiaire (+1 stabilite).')
+  if (mentorBonus > 0) highlights.push(`Mentor accompagne ${mentorBonus} rookie(s).`)
+  duoCores
+    .filter((duo) => duo.bonus !== 0)
+    .forEach((duo) => {
+      highlights.push(
+        duo.bonus > 0
+          ? `${duo.label}: ${duo.playerA} & ${duo.playerB} s'entendent bien (+${duo.bonus}).`
+          : `${duo.label}: tension entre ${duo.playerA} et ${duo.playerB} (${duo.bonus}).`,
+      )
+    })
+
+  return { score, duoCores, highlights, hasLeader, mentorBonus }
 }
 
 function buildTransferMarketFromPool(activeTeamId, size = 8) {
@@ -1890,6 +2366,7 @@ function buildOpponentComfortPool(opponentRoster) {
         role: champion.role,
         playerPseudo: opponent.pseudo,
         mastery: 20,
+        tags: champion.tags ?? [],
       })
     })
   })
@@ -2153,23 +2630,13 @@ function evaluateNoLuckTeamCombos(draftState) {
     return { activeCombos: [], bonusMacro: 0, bonusSurvive: 0 }
   }
 
-  const normalize = (value) => String(value).toLowerCase().replace(/[^a-z0-9]/g, '')
-  const normalizedSet = new Set(pickedIds.map(normalize))
-  const activeCombos = (NO_LUCK_COMBOS ?? []).filter((combo) =>
-    combo.requirements.every((req) => normalizedSet.has(normalize(req))),
-  )
+  const { activeCombos, bonusSummary } = evaluateNoLuckCombos(pickedIds)
 
-  let bonusMacro = 0
-  let bonusSurvive = 0
-  activeCombos.forEach((combo) => {
-    if (combo.bonus.stat === 'macro') {
-      bonusMacro += combo.bonus.value
-    } else if (combo.bonus.stat === 'group_survivability') {
-      bonusSurvive += combo.bonus.value
-    }
-  })
-
-  return { activeCombos, bonusMacro, bonusSurvive }
+  return {
+    activeCombos,
+    bonusMacro: bonusSummary.macro ?? 0,
+    bonusSurvive: bonusSummary.group_survivability ?? 0,
+  }
 }
 
 function getRoleSpecificBonus(player, champion, phaseId) {
@@ -2234,7 +2701,33 @@ function computePhaseNoLuckBattle({
   gameIndex = 0,
   metaPatchInfluence = null,
   sideEarlyBoost = 0,
+  shotcallerRole = 'Mid',
+  strongSide = 'bot',
+  chemistryScore = 0,
+  isHighPressureMatch = false,
+  teamfightStyleId = DEFAULT_TEAMFIGHT_STYLE_ID,
+  winConditionRole = 'ADC',
+  laneInstructions = null,
 }) {
+  const shotcaller = roster?.find((player) => player.role === shotcallerRole) ?? null
+  const shotcallerBonusMacro = shotcaller ? Math.max(0, (shotcaller.macro - 70) * 0.4) : 0
+  const topLaner = roster?.find((player) => player.role === 'Top') ?? null
+  const adcPlayer = roster?.find((player) => player.role === 'ADC') ?? null
+  const strongPlayer = strongSide === 'top' ? topLaner : adcPlayer
+  const weakPlayer = strongSide === 'top' ? adcPlayer : topLaner
+  const strongSideBonus = strongPlayer ? Math.max(0, (strongPlayer.laning - 65) * 0.25) : 0
+  const weakSidePenalty = weakPlayer ? Math.max(0, (70 - weakPlayer.laning) * 0.15) : 0
+  // Chemistry converted into a flat teamfight/macro bump (applied per phase later)
+  const chemistryBonus = chemistryScore * 1.2
+  // Teamfight style multipliers
+  const tfStyle = getTeamfightStyleById(teamfightStyleId)
+  // Lane instructions: compute per-role laning/macro modifiers
+  const laneInstructionModByRole = {}
+  const safeInstructions = laneInstructions ?? DEFAULT_LANE_INSTRUCTIONS
+  ;['Top', 'Jungle', 'Mid', 'ADC', 'Support'].forEach((role) => {
+    const instr = getLaneInstructionForRole(role, safeInstructions[role])
+    laneInstructionModByRole[role] = instr
+  })
   const phases = [
     { id: 'early', label: 'Early', startMinute: 0, endMinute: 15, laneWeight: 0.58, macroWeight: 0.18, tfWeight: 0.24 },
     { id: 'mid', label: 'Mid', startMinute: 15, endMinute: 25, laneWeight: 0.26, macroWeight: 0.36, tfWeight: 0.38 },
@@ -2261,10 +2754,19 @@ function computePhaseNoLuckBattle({
       const rolePenalty = rolePenaltyByRole[player.role]
       const statMultiplier = rolePenalty?.multiplier ?? 1
       const roleWeight = phaseRoleWeights[player.role] ?? 0.2
-      const laneValue = (player.laning ?? 70) * statMultiplier
-      const macroValue = (player.macro ?? 70) * statMultiplier
-      const tfValue = (player.teamfight ?? 70) * statMultiplier
-      const mechValue = (player.mechanics ?? 70) * statMultiplier
+      // Lane instruction modifiers per role
+      const instrMod = laneInstructionModByRole[player.role] ?? { laningMod: 0, macroMod: 0 }
+      const laneInstrFactor = 1 + (phase.id === 'early' ? instrMod.laningMod : instrMod.laningMod * 0.3)
+      const macroInstrFactor = 1 + (phase.id === 'late' ? instrMod.macroMod : instrMod.macroMod * 0.5)
+      // Teamfight style multipliers (apply to stats of bonus roles more strongly)
+      const isBonusRole = tfStyle.bonusRoles.includes(player.role)
+      const roleTfMult = isBonusRole ? tfStyle.tfMultiplier : 1 + (tfStyle.tfMultiplier - 1) * 0.3
+      const roleMacroMult = isBonusRole ? tfStyle.macroMultiplier : 1 + (tfStyle.macroMultiplier - 1) * 0.3
+      const roleMechMult = isBonusRole ? tfStyle.mechMultiplier : 1 + (tfStyle.mechMultiplier - 1) * 0.3
+      const laneValue = (player.laning ?? 70) * statMultiplier * laneInstrFactor
+      const macroValue = (player.macro ?? 70) * statMultiplier * macroInstrFactor * roleMacroMult
+      const tfValue = (player.teamfight ?? 70) * statMultiplier * roleTfMult
+      const mechValue = (player.mechanics ?? 70) * statMultiplier * roleMechMult
       const mentalFactor = ((player.mental ?? 14) - 12) * 0.8
       const base =
         (laneValue * phase.laneWeight) +
@@ -2284,10 +2786,22 @@ function computePhaseNoLuckBattle({
     })
 
     // Carry ceiling bonus: best Mid/ADC late game pulls the average up
+    // Win condition role gets amplified carry ceiling via teamfight style
+    const winConAmp = tfStyle.carryCeilingAmp
     if (phase.id === 'late') {
       const adcMech = computeCarryCeiling(players, 'ADC', 'mechanics')
       const midMech = computeCarryCeiling(players, 'Mid', 'mechanics')
-      total += Math.max(0, (adcMech - 70) * 0.7) + Math.max(0, (midMech - 70) * 0.5)
+      const adcAmp = winConditionRole === 'ADC' ? winConAmp : 1
+      const midAmp = winConditionRole === 'Mid' ? winConAmp : 1
+      total += Math.max(0, (adcMech - 70) * 0.7 * adcAmp) + Math.max(0, (midMech - 70) * 0.5 * midAmp)
+      // Non-standard win conditions: Top/Jungle/Support carry
+      if (winConditionRole === 'Top') {
+        const topMech = computeCarryCeiling(players, 'Top', 'mechanics')
+        total += Math.max(0, (topMech - 70) * 0.5 * winConAmp)
+      } else if (winConditionRole === 'Jungle') {
+        const jgMechLate = computeCarryCeiling(players, 'Jungle', 'mechanics')
+        total += Math.max(0, (jgMechLate - 70) * 0.4 * winConAmp)
+      }
     } else if (phase.id === 'early') {
       const jgMech = computeCarryCeiling(players, 'Jungle', 'mechanics')
       const topLane = computeCarryCeiling(players, 'Top', 'laning')
@@ -2345,6 +2859,16 @@ function computePhaseNoLuckBattle({
 
     const objectiveBoost = phase.id === 'mid' || phase.id === 'late' ? (approach.objectiveMultiplier - 1) * 10 : 0
     const tacticBoost = (aggressivite * 0.08) + (rythmeJeu * 0.06) + (prioriteObjectifs * 0.04)
+    // Shotcaller amplifies team macro in mid/late phases
+    const shotcallerPhaseBonus =
+      phase.id === 'late' ? shotcallerBonusMacro * 1.2 : phase.id === 'mid' ? shotcallerBonusMacro : shotcallerBonusMacro * 0.3
+    // Strong side gains laning advantage early, weak side loses a bit
+    const sidePriorityBoost = phase.id === 'early' ? strongSideBonus - weakSidePenalty : phase.id === 'mid' ? (strongSideBonus - weakSidePenalty) * 0.4 : 0
+    // Chemistry impacts mid/late teamfights most
+    const chemistryPhaseBonus =
+      phase.id === 'late' ? chemistryBonus : phase.id === 'mid' ? chemistryBonus * 0.6 : chemistryBonus * 0.2
+    // High pressure clause: playoffs/international matches amplify trait swings indirectly through variance
+    const highPressureChemistrySwing = isHighPressureMatch ? chemistryBonus * 0.3 : 0
     const draftBoost = draftScore * (phase.id === 'early' ? 0.8 : phase.id === 'mid' ? 1.05 : 1.2) * DRAFT_WINRATE_IMPACT_FACTOR
     const exploitBoost = averageDraftPenalty * (phase.id === 'early' ? 15 : phase.id === 'mid' ? 12 : 9)
 
@@ -2363,7 +2887,7 @@ function computePhaseNoLuckBattle({
       ((stableHash(`${matchId}-g${gameIndex}-${phase.id}-enemy`) % (enemyVarianceRange * 2 + 1)) - enemyVarianceRange) * 0.7
 
     const sideBoost = phase.id === 'early' ? sideEarlyBoost : 0
-    const teamPower = (baseTeamPower * approachMultiplier) + objectiveBoost + tacticBoost + draftBoost - approach.farmPenalty + teamVariance + sideBoost
+    const teamPower = (baseTeamPower * approachMultiplier) + objectiveBoost + tacticBoost + shotcallerPhaseBonus + sidePriorityBoost + chemistryPhaseBonus + highPressureChemistrySwing + draftBoost - approach.farmPenalty + teamVariance + sideBoost
     const enemyPower = baseEnemyPower + enemyVariance + exploitBoost
     const diff = teamPower - enemyPower
     const goldSwing = clamp(Math.round(diff * 52), -4200, 4200)
@@ -2695,6 +3219,13 @@ function simulateSingleGame({
   prioriteObjectifs,
   metaPatchInfluence = null,
   teamSide = 'blue',
+  shotcallerRole = 'Mid',
+  strongSide = 'bot',
+  chemistryScore = 0,
+  isHighPressureMatch = false,
+  teamfightStyleId = DEFAULT_TEAMFIGHT_STYLE_ID,
+  winConditionRole = 'ADC',
+  laneInstructions = null,
 }) {
   // Side bonus: blue side has first pick priority (+1 early lane), red side has last pick counter (+1 draft vs enemy carry)
   const sideDraftScore = teamSide === 'blue' ? draftScore + 1 : draftScore + 2
@@ -2714,6 +3245,13 @@ function simulateSingleGame({
     gameIndex,
     metaPatchInfluence,
     sideEarlyBoost,
+    shotcallerRole,
+    strongSide,
+    chemistryScore,
+    isHighPressureMatch,
+    teamfightStyleId,
+    winConditionRole,
+    laneInstructions,
   })
 
   const timeline = generateLiveTimeline({
@@ -2784,7 +3322,14 @@ function buildMatchSimulationEngine({
   prioriteObjectifs,
   metaPatchInfluence = null,
   approachByGame = null,
+  shotcallerRole = 'Mid',
+  strongSide = 'bot',
+  teamfightStyleId = DEFAULT_TEAMFIGHT_STYLE_ID,
+  winConditionRole = 'ADC',
+  laneInstructions = null,
 }) {
+  const chemistry = computeTeamChemistry(roster, rosterProfiles, baseRosterProfiles)
+  const chemistryScore = chemistry?.score ?? 0
   const draftPunishmentProfile = applyMentalCoachToPunishmentProfile(
     computeDraftPunishmentProfile({
       draftState,
@@ -2838,6 +3383,13 @@ function buildMatchSimulationEngine({
       prioriteObjectifs,
       metaPatchInfluence,
       teamSide,
+      shotcallerRole,
+      strongSide,
+      chemistryScore,
+      isHighPressureMatch,
+      teamfightStyleId,
+      winConditionRole,
+      laneInstructions,
     })
     game.teamSide = teamSide
 
@@ -2916,6 +3468,7 @@ function buildMatchSimulationEngine({
     seriesWon,
     teamWins,
     enemyWins,
+    chemistry,
   }
 }
 
@@ -2973,7 +3526,7 @@ function Panel({ title, subtitle, children }) {
   )
 }
 
-function DashboardPage({ effectif, onOpenPlayerProfile, onOpenSoloQLadder, soloQPreview, matchDayInsights }) {
+function DashboardPage({ effectif, onOpenPlayerProfile, onOpenSoloQLadder, soloQPreview, matchDayInsights, teamChemistry }) {
   return (
     <div className="space-y-4">
       {matchDayInsights ? (
@@ -3094,14 +3647,24 @@ function DashboardPage({ effectif, onOpenPlayerProfile, onOpenSoloQLadder, soloQ
           <Panel title="Moral global" subtitle="Etat du vestiaire">
           <div className="space-y-2 text-sm text-[var(--text-soft)]">
             <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
-              Moral equipe: <span className="font-semibold text-[var(--text-main)]">Bon</span>
+              Chimie d equipe: <span className="font-semibold text-[var(--text-main)]">
+                {(teamChemistry?.score ?? 0) >= 5 ? 'Excellente' : (teamChemistry?.score ?? 0) >= 2 ? 'Bonne' : (teamChemistry?.score ?? 0) >= 0 ? 'Neutre' : 'Tendue'} ({(teamChemistry?.score ?? 0) >= 0 ? '+' : ''}{teamChemistry?.score ?? 0})
+              </span>
             </p>
-            <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
-              Confiance shotcall: <span className="font-semibold text-[var(--text-main)]">Elevee</span>
-            </p>
-            <p className="rounded border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2 text-[var(--warn-text)]">
-              Vigilance fatigue: Rook + Naru
-            </p>
+            {teamChemistry?.hasLeader ? (
+              <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
+                Un leader stabilise le vestiaire.
+              </p>
+            ) : (
+              <p className="rounded border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2 text-[var(--warn-text)]">
+                Aucun leader identifie dans le vestiaire.
+              </p>
+            )}
+            {(teamChemistry?.highlights ?? []).slice(0, 2).map((line, index) => (
+              <p key={`dash-chem-${index}`} className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
+                {line}
+              </p>
+            ))}
           </div>
         </Panel>
 
@@ -3374,6 +3937,24 @@ function PlayerProfilePage({ player, profile, onBackToRoster, onTrainChampion })
                 {profile.realName} - {player.role} - {profile.age} ans - {profile.nationality}
               </p>
               <p className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">Team ID: {player.teamId}</p>
+              {(profile.traits ?? []).length > 0 ? (
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {profile.traits.map((traitId) => {
+                    const trait = TRAIT_CATALOG[traitId]
+                    if (!trait) return null
+                    return (
+                      <span
+                        key={`prof-trait-${traitId}`}
+                        className="rounded-full border px-2 py-0.5 text-[0.6rem] font-semibold"
+                        style={{ color: trait.color, borderColor: trait.color }}
+                        title={trait.description}
+                      >
+                        {trait.label}
+                      </span>
+                    )
+                  })}
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -3496,6 +4077,27 @@ function PlayerProfilePage({ player, profile, onBackToRoster, onTrainChampion })
                   {result}
                 </span>
               ))}
+            </div>
+          </Panel>
+
+          <Panel title="SoloQ" subtitle="Ladder Europe - impact mechanics">
+            <div className="space-y-2 text-sm text-[var(--text-soft)]">
+              <p>
+                LP actuel: <span className="font-semibold text-[var(--text-main)]">{player?.ladderLP ?? profile.ladderLP ?? 640}</span>
+              </p>
+              <div className="h-2 rounded bg-[var(--surface-1)]">
+                <div
+                  className="h-2 rounded bg-[var(--accent)]"
+                  style={{ width: `${Math.min(100, ((player?.ladderLP ?? 640) / 1800) * 100)}%` }}
+                />
+              </div>
+              {(player?.soloQBonus ?? 0) > 0 ? (
+                <p className="rounded border border-[var(--accent)] bg-[color:rgba(200,170,110,0.12)] px-3 py-2 text-xs">
+                  Bonus SoloQ actif: <span className="font-semibold text-[var(--text-main)]">+{player.soloQBonus} mechanics</span>
+                </p>
+              ) : (
+                <p className="text-xs text-[var(--text-muted)]">Sous la barre de 640 LP, pas de bonus mechanics.</p>
+              )}
             </div>
           </Panel>
 
@@ -3855,6 +4457,17 @@ function TactiquesPage({
   onChangePrioriteObjectifs,
   focusJoueur,
   onChangeFocusJoueur,
+  shotcallerRole,
+  onChangeShotcallerRole,
+  strongSide,
+  onChangeStrongSide,
+  teamfightStyleId,
+  onChangeTeamfightStyle,
+  winConditionRole,
+  onChangeWinConditionRole,
+  laneInstructions,
+  onChangeLaneInstruction,
+  roster,
   onSaveTactique,
   saveMessage,
 }) {
@@ -3864,6 +4477,18 @@ function TactiquesPage({
   const orientationObjectifs =
     prioriteObjectifs < 35 ? 'Priorite Dragons' : prioriteObjectifs < 65 ? 'Equilibre Dragons/Tours' : 'Priorite Tours'
   const joueurFocus = focusJunglerTargets.find((joueur) => joueur.joueur === focusJoueur)
+  const rosterByRole = (roster ?? []).reduce((acc, player) => {
+    acc[player.role] = player
+    return acc
+  }, {})
+  const shotcaller = rosterByRole[shotcallerRole]
+  const shotcallerMacroStat = shotcaller?.macro ?? 70
+  const shotcallerBonusMacro = Math.max(0, Math.round((shotcallerMacroStat - 70) * 0.4))
+  const strongSidePlayer = strongSide === 'top' ? rosterByRole.Top : rosterByRole.ADC
+  const weakSidePlayer = strongSide === 'top' ? rosterByRole.ADC : rosterByRole.Top
+  const roleOrder = ['Top', 'Jungle', 'Mid', 'ADC', 'Support']
+  const activeTeamfightStyle = getTeamfightStyleById(teamfightStyleId)
+  const winConPlayer = rosterByRole[winConditionRole]
 
   return (
     <div className="grid gap-4 xl:grid-cols-[1.65fr_1fr]">
@@ -3943,9 +4568,183 @@ function TactiquesPage({
             </div>
           </div>
         </Panel>
+
+        <Panel title="Style de teamfight" subtitle="Comment votre equipe se bat en 5v5">
+          <div className="grid grid-cols-2 gap-2">
+            {TEAMFIGHT_STYLES.map((style) => {
+              const isActive = teamfightStyleId === style.id
+              return (
+                <button
+                  key={style.id}
+                  type="button"
+                  onClick={() => onChangeTeamfightStyle(style.id)}
+                  className={`rounded border px-3 py-2 text-left transition ${
+                    isActive
+                      ? 'border-[var(--accent)] bg-[color:rgba(200,170,110,0.18)]'
+                      : 'border-[var(--border-soft)] bg-[var(--surface-2)] hover:border-[var(--accent)]/60'
+                  }`}
+                >
+                  <p className="font-heading text-sm uppercase tracking-[0.04em] text-[var(--text-main)]">
+                    {style.icon} {style.label}
+                  </p>
+                  <p className="mt-1 text-[0.65rem] text-[var(--text-soft)]">{style.description}</p>
+                  <div className="mt-2 flex flex-wrap gap-1 text-[0.55rem] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                    {style.tfMultiplier !== 1 && <span>TF ×{style.tfMultiplier.toFixed(2)}</span>}
+                    {style.macroMultiplier !== 1 && <span>Macro ×{style.macroMultiplier.toFixed(2)}</span>}
+                    {style.mechMultiplier !== 1 && <span>Mech ×{style.mechMultiplier.toFixed(2)}</span>}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+          <p className="mt-3 text-xs text-[var(--text-soft)]">
+            Style actif: <span className="font-semibold text-[var(--text-main)]">{activeTeamfightStyle.icon} {activeTeamfightStyle.label}</span> — Roles avantages: {activeTeamfightStyle.bonusRoles.join(', ')}.
+          </p>
+        </Panel>
+
+        <Panel title="Win Condition" subtitle="Qui est le carry principal ?">
+          <div className="mb-2 text-xs text-[var(--text-soft)]">
+            Le win condition recoit un bonus carry ceiling en late game. L equipe joue pour lui.
+          </div>
+          <div className="grid grid-cols-5 gap-2">
+            {roleOrder.map((role) => {
+              const candidate = rosterByRole[role]
+              const isActive = winConditionRole === role
+              return (
+                <button
+                  key={`wc-${role}`}
+                  type="button"
+                  onClick={() => onChangeWinConditionRole(role)}
+                  className={`rounded border px-2 py-2 text-center transition ${
+                    isActive
+                      ? 'border-[var(--accent)] bg-[color:rgba(200,170,110,0.18)]'
+                      : 'border-[var(--border-soft)] bg-[var(--surface-2)] hover:border-[var(--accent)]/60'
+                  }`}
+                >
+                  <p className="font-heading text-[0.65rem] uppercase tracking-[0.08em] text-[var(--text-muted)]">{role}</p>
+                  <p className="truncate text-sm font-semibold text-[var(--text-main)]">{candidate?.pseudo ?? '-'}</p>
+                </button>
+              )
+            })}
+          </div>
+          {winConPlayer ? (
+            <p className="mt-3 text-xs text-[var(--text-soft)]">
+              Carry: <span className="font-semibold text-[var(--text-main)]">{winConPlayer.pseudo}</span> — amplifie ×{activeTeamfightStyle.carryCeilingAmp.toFixed(2)} en late.
+            </p>
+          ) : null}
+        </Panel>
+
+        <Panel title="Instructions par lane" subtitle="Consignes individuelles">
+          <div className="space-y-2">
+            {roleOrder.map((role) => {
+              const options = LANE_INSTRUCTIONS[role] ?? []
+              const currentId = laneInstructions?.[role] ?? options[0]?.id
+              const player = rosterByRole[role]
+              return (
+                <div key={`li-${role}`} className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
+                  <div className="mb-1 flex items-center justify-between">
+                    <p className="font-heading text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">{role} — {player?.pseudo ?? '-'}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {options.map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => onChangeLaneInstruction(role, opt.id)}
+                        title={opt.description}
+                        className={`rounded px-2 py-1 text-[0.65rem] font-semibold transition ${
+                          currentId === opt.id
+                            ? 'bg-[var(--accent)] text-[var(--surface-0)]'
+                            : 'bg-[var(--surface-3)] text-[var(--text-soft)] hover:text-[var(--text-main)]'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </Panel>
       </div>
 
       <div className="space-y-4">
+        <Panel title="Shotcaller" subtitle="Voix decisionnelle en game">
+          <div className="mb-3 text-xs text-[var(--text-soft)]">
+            Le shotcaller impose son macro au reste de l equipe en mid/late game. Plus sa note macro est haute, plus le bonus collectif est fort.
+          </div>
+          <div className="grid grid-cols-5 gap-2">
+            {roleOrder.map((role) => {
+              const candidate = rosterByRole[role]
+              const isActive = shotcallerRole === role
+              return (
+                <button
+                  key={role}
+                  type="button"
+                  onClick={() => onChangeShotcallerRole(role)}
+                  className={`rounded border px-2 py-2 text-center transition ${
+                    isActive
+                      ? 'border-[var(--accent)] bg-[color:rgba(200,170,110,0.18)]'
+                      : 'border-[var(--border-soft)] bg-[var(--surface-2)] hover:border-[var(--accent)]/60'
+                  }`}
+                >
+                  <p className="font-heading text-[0.65rem] uppercase tracking-[0.08em] text-[var(--text-muted)]">{role}</p>
+                  <p className="truncate text-sm font-semibold text-[var(--text-main)]">{candidate?.pseudo ?? '-'}</p>
+                  <p className="text-[0.65rem] text-[var(--text-soft)]">Macro {candidate?.macro ?? '-'}</p>
+                </button>
+              )
+            })}
+          </div>
+          {shotcaller ? (
+            <p className="mt-3 rounded border border-[var(--accent)] bg-[color:rgba(200,170,110,0.12)] px-3 py-2 text-xs text-[var(--text-soft)]">
+              <span className="font-semibold text-[var(--text-main)]">{shotcaller.pseudo}</span> dirige les calls.
+              Bonus macro collectif mid/late: <span className="font-semibold text-[var(--text-main)]">+{shotcallerBonusMacro}</span>.
+            </p>
+          ) : null}
+        </Panel>
+
+        <Panel title="Strong / Weak side" subtitle="Priorite de farm bot vs top">
+          <div className="mb-3 text-xs text-[var(--text-soft)]">
+            Le strong side recoit les ressources du jungler et un bonus de laning. Le weak side accepte un deficit pour liberer la map.
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              { id: 'bot', label: 'Bot (ADC)', role: 'ADC' },
+              { id: 'top', label: 'Top laner', role: 'Top' },
+            ].map((option) => {
+              const player = rosterByRole[option.role]
+              const isActive = strongSide === option.id
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => onChangeStrongSide(option.id)}
+                  className={`rounded border px-3 py-2 text-left transition ${
+                    isActive
+                      ? 'border-[var(--accent)] bg-[color:rgba(200,170,110,0.18)]'
+                      : 'border-[var(--border-soft)] bg-[var(--surface-2)] hover:border-[var(--accent)]/60'
+                  }`}
+                >
+                  <p className="font-heading text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">Strong side</p>
+                  <p className="text-sm font-semibold text-[var(--text-main)]">{option.label}</p>
+                  <p className="text-[0.7rem] text-[var(--text-soft)]">{player?.pseudo ?? '-'} - Laning {player?.laning ?? '-'}</p>
+                </button>
+              )
+            })}
+          </div>
+          {strongSidePlayer && weakSidePlayer ? (
+            <div className="mt-3 space-y-1 text-xs text-[var(--text-soft)]">
+              <p>
+                Strong: <span className="font-semibold text-[var(--text-main)]">{strongSidePlayer.pseudo}</span> - bonus laning early.
+              </p>
+              <p>
+                Weak: <span className="font-semibold text-[var(--text-main)]">{weakSidePlayer.pseudo}</span> - malus farm tolere pour creer tempo ailleurs.
+              </p>
+            </div>
+          ) : null}
+        </Panel>
+
         <Panel title="Focus Jungler" subtitle="Joueur a aider en priorite">
           <div className="space-y-2">
             {focusJunglerTargets.map((cible) => (
@@ -3972,6 +4771,10 @@ function TactiquesPage({
             <p>Rythme de jeu: <span className="font-semibold text-[var(--text-main)]">{tempoScrims}</span></p>
             <p>Priorite objectifs: <span className="font-semibold text-[var(--text-main)]">{orientationObjectifs}</span></p>
             <p>Focus jungler: <span className="font-semibold text-[var(--text-main)]">{joueurFocus?.joueur}</span></p>
+            <p>Shotcaller: <span className="font-semibold text-[var(--text-main)]">{shotcaller?.pseudo ?? '-'} ({shotcallerRole})</span></p>
+            <p>Strong side: <span className="font-semibold text-[var(--text-main)]">{strongSide === 'top' ? 'Top' : 'Bot'}</span></p>
+            <p>Teamfight: <span className="font-semibold text-[var(--text-main)]">{activeTeamfightStyle.icon} {activeTeamfightStyle.label}</span></p>
+            <p>Win Condition: <span className="font-semibold text-[var(--text-main)]">{winConPlayer?.pseudo ?? '-'} ({winConditionRole})</span></p>
             <p>Gain de gold estime @15: <span className="font-semibold text-[var(--text-main)]">+{bonusGold15}</span></p>
             <p>Risque de counter-play: <span className="font-semibold text-[var(--text-main)]">{risqueCounterPlay}%</span></p>
           </div>
@@ -3990,95 +4793,225 @@ function TactiquesPage({
   )
 }
 
-function RapportAnalystePage({ aggressivite, rythmeJeu, prioriteObjectifs, focusJoueur }) {
-  const pressionEarly = Math.round((aggressivite * 0.55) + (rythmeJeu * 0.35) + ((100 - prioriteObjectifs) * 0.1))
-  const bonusFocusMid = focusJoueur === 'Miro' ? 18 : 6
-  const scoreNoLuck = Math.round(
-    (pressionEarly * 0.48) +
-      (rapportAdversaire.faiblesses.earlyGame * 0.37) +
-      (bonusFocusMid * 0.15),
-  )
-  const victoireMathematique =
-    aggressivite >= 65 &&
-    rythmeJeu >= 58 &&
-    rapportAdversaire.faiblesses.earlyGame >= 70
+function RapportAnalystePage({
+  nextMatch,
+  opponentRoster,
+  opponentComfortPool,
+  analystLevel,
+  headScoutLevel,
+  metaPatchState,
+  aggressivite,
+  rythmeJeu,
+  prioriteObjectifs,
+}) {
+  if (!nextMatch) {
+    return (
+      <Panel title="Rapport d'Analyste" subtitle="Aucun match a venir">
+        <p className="text-sm text-[var(--text-soft)]">
+          Pas de match planifie. Consulte le calendrier pour programmer un match et generer un rapport d analyse.
+        </p>
+      </Panel>
+    )
+  }
+
+  if (analystLevel < 1) {
+    return (
+      <Panel title="Rapport d'Analyste" subtitle={`Prochain match: ${nextMatch.opponent}`}>
+        <div className="space-y-3 text-sm text-[var(--text-soft)]">
+          <p className="rounded border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2 text-[var(--warn-text)]">
+            Aucun analyste sous contrat. Impossible de produire un rapport pre-match detaille.
+          </p>
+          <p>Rends-toi dans Recrutement pour embaucher un Data Analyst (niveau 1 minimum).</p>
+        </div>
+      </Panel>
+    )
+  }
+
+  // Compute phase strengths from roster stats (FM scale 1-20 → /100 percent)
+  const rosterSize = Math.max(opponentRoster?.length ?? 0, 1)
+  const avgStat = (key) =>
+    (opponentRoster ?? []).reduce((sum, player) => sum + (player.stats?.[key] ?? 14), 0) / rosterSize
+
+  const avgLaning = avgStat('laning')
+  const avgMechanics = avgStat('mechanics')
+  const avgTeamfight = avgStat('teamfight')
+  const avgMacro = avgStat('macro')
+  const avgMental = avgStat('mental')
+
+  // Convert to 0-100 strength per phase
+  const earlyStrength = Math.round((avgLaning * 0.6 + avgMechanics * 0.4) * 5)
+  const midStrength = Math.round((avgTeamfight * 0.5 + avgMacro * 0.5) * 5)
+  const lateStrength = Math.round((avgTeamfight * 0.4 + avgMacro * 0.6) * 5)
+  const mentalStrength = Math.round(avgMental * 5)
+
+  const phases = [
+    { id: 'early', label: 'Early (0-15min)', strength: earlyStrength },
+    { id: 'mid', label: 'Mid (15-25min)', strength: midStrength },
+    { id: 'late', label: 'Late (25min+)', strength: lateStrength },
+  ]
+  const weakestPhase = [...phases].sort((a, b) => a.strength - b.strength)[0]
+
+  // Count archetype tags in their signature champions (via comfortPool)
+  const tagCounts = {}
+  ;(opponentComfortPool ?? []).forEach((entry) => {
+    ;(entry.tags ?? []).forEach((tag) => {
+      tagCounts[tag] = (tagCounts[tag] ?? 0) + 1
+    })
+  })
+  const topTags = Object.entries(tagCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([tag, count]) => ({ tag, count }))
+
+  // Meta patch influence
+  const metaPatchInfo = metaPatchState
+    ? `Patch ${metaPatchState.version} - Boost: ${metaPatchState.boostedArchetype ?? '-'} / Nerf: ${metaPatchState.nerfedArchetype ?? '-'}`
+    : 'Patch en cours'
+
+  // Signature champions revealed by head scout level
+  const revealLimit = headScoutLevel >= 3 ? 10 : headScoutLevel >= 2 ? 6 : headScoutLevel >= 1 ? 3 : 0
+  const signatureList = (opponentComfortPool ?? []).slice(0, revealLimit)
+
+  // Counter tag suggestions based on top enemy tag
+  const counterByArchetype = {
+    Scaling: 'Early-game pressure (Pantheon, LeBlanc, Renekton)',
+    Engage: 'Disengage + Peel (Janna, Lulu, Tahm Kench)',
+    Poke: 'Dive comps (Malphite, Jarvan, Leona)',
+    Pick: 'Grouped & warded (vision budget up)',
+    Assassin: 'Frontline + tank Support',
+    'Teamfight': 'Split-push pressure (Trundle, Fiora)',
+    'Split Push': 'Wave clear + 4-1 rotations',
+  }
+  const topTag = topTags[0]?.tag
+  const counterRecommendation = topTag ? counterByArchetype[topTag] ?? 'Aucune contre-strategie evidente' : null
+
+  const analystColor = earlyStrength < 60 ? 'text-[var(--success)]' : earlyStrength > 75 ? 'text-[var(--danger)]' : 'text-[var(--text-main)]'
 
   return (
     <div className="grid gap-4 xl:grid-cols-[1.7fr_1fr]">
       <div className="space-y-4">
-        <Panel title="Rapport d'Analyste" subtitle={`Scouting pre-match - ${rapportAdversaire.equipe} (Patch ${rapportAdversaire.patch})`}>
-          <div className="space-y-2 text-sm text-[var(--text-soft)]">
+        <Panel title="Rapport d'Analyste" subtitle={`Pre-match: ${nextMatch.opponent} - ${metaPatchInfo}`}>
+          <div className="space-y-3 text-sm text-[var(--text-soft)]">
+            <div>
+              <p className="text-xs uppercase tracking-[0.12em] text-[var(--text-muted)]">Force par phase</p>
+              <div className="mt-2 space-y-1.5">
+                {phases.map((phase) => (
+                  <div key={phase.id} className="flex items-center gap-2">
+                    <span className="w-32 text-[var(--text-main)]">{phase.label}</span>
+                    <div className="flex-1 h-2 rounded bg-[var(--surface-2)] overflow-hidden">
+                      <div
+                        className={`h-full ${phase.strength > 75 ? 'bg-[var(--danger)]' : phase.strength < 60 ? 'bg-[var(--success)]' : 'bg-[var(--accent)]'}`}
+                        style={{ width: `${Math.min(100, phase.strength)}%` }}
+                      />
+                    </div>
+                    <span className="w-12 text-right font-semibold text-[var(--text-main)]">{phase.strength}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
             <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
-              Faiblesse Early Game: <span className="font-semibold text-[var(--text-main)]">{rapportAdversaire.faiblesses.earlyGame}/100</span>
+              Phase la plus faible: <span className="font-semibold text-[var(--text-main)]">{weakestPhase.label}</span>. Exploiter pour forcer les erreurs.
             </p>
-            <p className="rounded border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2 text-[var(--warn-text)]">
-              Leur Midlaner a un score Mental faible: <span className="font-semibold">{rapportAdversaire.faiblesses.mentalMid}/100</span>. Le focus jungle mid est recommande.
-            </p>
-            <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
-              Vision de riviere insuffisante: <span className="font-semibold text-[var(--text-main)]">{rapportAdversaire.faiblesses.visionRiver}/100</span>
-            </p>
-            <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
-              Conversion des avantages instable: <span className="font-semibold text-[var(--text-main)]">{rapportAdversaire.faiblesses.conversionLead}/100</span>
-            </p>
+            {analystLevel >= 2 ? (
+              <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
+                Mental global adverse: <span className={`font-semibold ${analystColor}`}>{mentalStrength}/100</span>
+                {mentalStrength < 60 ? ' - Tiltables, jouer aggro' : ' - Solides mentalement'}
+              </p>
+            ) : null}
           </div>
         </Panel>
 
-        <Panel title="Plan recommande" subtitle="Execution No Luck">
-          <table className="fm-data-table">
-            <thead>
-              <tr>
-                <th>Levier</th>
-                <th>Valeur actuelle</th>
-                <th>Lecture analyste</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Agressivite</td>
-                <td>{aggressivite}</td>
-                <td>{aggressivite >= 65 ? 'Exploit optimal de leur early faible' : 'Monter au-dessus de 65 recommande'}</td>
-              </tr>
-              <tr>
-                <td>Rythme de jeu</td>
-                <td>{rythmeJeu}</td>
-                <td>{rythmeJeu >= 58 ? 'Tempo assez haut pour punir' : 'Accelerer le tempo early'}</td>
-              </tr>
-              <tr>
-                <td>Focus Jungler</td>
-                <td>{focusJoueur}</td>
-                <td>{focusJoueur === 'Miro' ? 'Excellent: pression mentale sur le Mid adverse' : 'Focus Mid conseille pour casser leur mental'}</td>
-              </tr>
-            </tbody>
-          </table>
-        </Panel>
+        {headScoutLevel >= 1 && signatureList.length > 0 ? (
+          <Panel title="Champions signatures adverses" subtitle={`Scout level ${headScoutLevel}/3 - ${signatureList.length} reveles`}>
+            <table className="fm-data-table">
+              <thead>
+                <tr>
+                  <th>Champion</th>
+                  <th>Role</th>
+                  <th>Tags</th>
+                </tr>
+              </thead>
+              <tbody>
+                {signatureList.map((entry) => (
+                  <tr key={entry.championId}>
+                    <td className="font-semibold text-[var(--text-main)]">{entry.championName ?? entry.championId}</td>
+                    <td>{entry.role ?? '-'}</td>
+                    <td className="text-xs text-[var(--text-muted)]">{(entry.tags ?? []).slice(0, 3).join(', ')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
+        ) : null}
+
+        {analystLevel >= 2 && topTags.length > 0 ? (
+          <Panel title="Archetype dominant" subtitle="Compositions preferees">
+            <div className="flex flex-wrap gap-2">
+              {topTags.map((entry) => (
+                <span
+                  key={entry.tag}
+                  className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-1 text-xs uppercase tracking-[0.1em]"
+                >
+                  {entry.tag} ({entry.count})
+                </span>
+              ))}
+            </div>
+            {counterRecommendation ? (
+              <p className="mt-3 rounded border border-[var(--accent)] bg-[color:rgba(200,170,110,0.12)] px-3 py-2 text-sm">
+                Contre-strategie: <span className="font-semibold text-[var(--text-main)]">{counterRecommendation}</span>
+              </p>
+            ) : null}
+          </Panel>
+        ) : null}
       </div>
 
       <div className="space-y-4">
-        <Panel title="Moteur No Luck" subtitle="Avantage mathematique previsionnel">
-          <div className="space-y-2 text-sm text-[var(--text-soft)]">
-            <p>Pression early calculee: <span className="font-semibold text-[var(--text-main)]">{pressionEarly}</span></p>
-            <p>Score No Luck: <span className="font-semibold text-[var(--text-main)]">{scoreNoLuck}</span></p>
-            <p>
-              Projection de victoire: <span className="font-semibold text-[var(--text-main)]">{Math.min(92, Math.max(42, scoreNoLuck))}%</span>
-            </p>
-          </div>
-
-          <div className={`mt-3 rounded border px-3 py-2 text-sm ${
-            victoireMathematique
-              ? 'border-[var(--accent)] bg-[color:rgba(200,170,110,0.16)] text-[var(--text-main)]'
-              : 'border-[var(--warn-border)] bg-[var(--warn-bg)] text-[var(--warn-text)]'
-          }`}>
-            {victoireMathematique
-              ? 'Signal fort: adversaire faible en early + tactique agressive. Victoire mathematique attendue si execution propre.'
-              : 'Signal prudent: la combinaison actuelle n exploite pas encore pleinement les faiblesses early adverses.'}
-          </div>
-        </Panel>
-
-        <Panel title="Action manager" subtitle="Avant le lancement du match">
-          <p className="text-sm text-[var(--text-soft)]">
-            Verifie que l agressivite reste elevee et que le jungler aide en priorite le Mid pour provoquer les erreurs mentales adverses.
+        <Panel title="Plan tactique actuel" subtitle="Configuration en vigueur">
+          <table className="fm-data-table">
+            <tbody>
+              <tr>
+                <td>Agressivite</td>
+                <td className="text-right font-semibold">{aggressivite}</td>
+              </tr>
+              <tr>
+                <td>Rythme</td>
+                <td className="text-right font-semibold">{rythmeJeu}</td>
+              </tr>
+              <tr>
+                <td>Priorite objectifs</td>
+                <td className="text-right font-semibold">{prioriteObjectifs}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p className="mt-3 text-xs text-[var(--text-muted)]">
+            {weakestPhase.id === 'early'
+              ? 'Monter l agressivite + rythme pour exploiter leur faiblesse early.'
+              : weakestPhase.id === 'late'
+                ? 'Prolonger la game. Priorite aux objectifs.'
+                : 'Forcer les rotations mid-game.'}
           </p>
         </Panel>
+
+        {analystLevel >= 3 ? (
+          <Panel title="Lecture No Luck" subtitle="Analyste niveau 3">
+            <div className="space-y-2 text-sm text-[var(--text-soft)]">
+              <p>
+                Projection: <span className="font-semibold text-[var(--text-main)]">
+                  {Math.round(50 + (60 - Math.min(earlyStrength, midStrength, lateStrength)) * 0.6)}%
+                </span>
+              </p>
+              <p className="text-xs text-[var(--text-muted)]">
+                Modele No Luck base sur stats reelles du roster adverse et le meta patch en cours.
+              </p>
+            </div>
+          </Panel>
+        ) : (
+          <Panel title="Analyste" subtitle={`Niveau ${analystLevel}/3`}>
+            <p className="text-sm text-[var(--text-soft)]">
+              Ameliore ton analyste pour debloquer: archetype dominant (L2), projection No Luck (L3).
+            </p>
+          </Panel>
+        )}
       </div>
     </div>
   )
@@ -4256,6 +5189,8 @@ function MatchDayPage({
   approachOptions,
   selectedApproachId,
   onSelectApproach,
+  approachByGame,
+  onSelectGameApproach,
   opponentComfortPool,
   enemyBans,
   draftState,
@@ -4503,6 +5438,44 @@ function MatchDayPage({
                           )
                         })}
                      </div>
+
+                     {(() => {
+                        const seriesSize = match?.seriesType === 'BO5' ? 5 : match?.seriesType === 'BO3' ? 3 : 1
+                        if (seriesSize <= 1) return null
+                        const currentByGame = approachByGame ?? []
+                        return (
+                          <div className="mt-5 rounded border border-gray-800 bg-black/60 p-4">
+                            <div className="mb-2 text-xs font-bold uppercase tracking-widest text-[#c8aa6e]">
+                              Audible par game ({match.seriesType})
+                            </div>
+                            <p className="mb-3 text-[11px] text-gray-400">
+                              Si tu laisses vide, le plan ci-dessus s applique. Tu peux forcer une approche specifique par partie.
+                            </p>
+                            <div className="flex flex-col gap-2">
+                              {Array.from({ length: seriesSize }).map((_, gameIndex) => {
+                                const value = currentByGame[gameIndex] ?? ''
+                                return (
+                                  <div key={gameIndex} className="flex items-center gap-2">
+                                    <span className="w-12 text-xs font-bold text-white">G{gameIndex + 1}</span>
+                                    <select
+                                      value={value}
+                                      onChange={(event) => onSelectGameApproach?.(gameIndex, event.target.value || null)}
+                                      className="flex-1 rounded border border-gray-800 bg-gray-900/80 px-2 py-1.5 text-xs text-white focus:border-[#c8aa6e] focus:outline-none"
+                                    >
+                                      <option value="">Plan global ({selectedApproach.label})</option>
+                                      {approachOptions.map((approach) => (
+                                        <option key={approach.id} value={approach.id}>
+                                          {approach.label}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        )
+                     })()}
 
                      <div className="mt-auto pt-6 flex justify-end">
                        <button
@@ -5527,13 +6500,117 @@ function RecrutementPage({
   onUpgradeStaff,
   transferMarket = [],
   onSignPlayer,
+  onOpenNegotiation,
+  onSubmitOffer,
+  onCloseNegotiation,
+  onRenewContract,
+  negotiationState,
   budget = 0,
   scoutingQueue = [],
   onLaunchScout,
   headScoutLevel = 0,
+  roster = [],
+  rosterProfiles = {},
+  baseRosterProfiles = {},
 }) {
+  const [offerSlider, setOfferSlider] = useState(90)
+  const negoTarget = negotiationState
+    ? transferMarket.find((entry) => entry.id === negotiationState.targetId)
+    : null
+
+  const expiringPlayers = roster.filter((player) => {
+    const profile = rosterProfiles[player.playerId] ?? baseRosterProfiles[player.playerId]
+    const endYear = profile?.contractEnd ?? getContractEndYear(player)
+    return endYear <= CURRENT_SEASON_YEAR + 1
+  })
+
   return (
     <div className="grid gap-4 xl:grid-cols-[2fr_1fr]">
+      {/* Negotiation modal overlay */}
+      {negotiationState && negoTarget && negotiationState.status !== 'accepted' ? (
+        <div className="col-span-full rounded border border-[var(--accent)] bg-[var(--surface-1)] px-5 py-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div>
+              <p className="font-heading text-lg uppercase tracking-[0.04em] text-[var(--text-main)]">
+                Negociation — {negoTarget.pseudo} ({negoTarget.role})
+              </p>
+              <p className="text-xs text-[var(--text-soft)]">
+                Prix demande: {formatBudgetShort(negoTarget.askingPrice)} — Round {negotiationState.round + 1}/3
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onCloseNegotiation}
+              className="rounded border border-[var(--border-soft)] px-3 py-1 text-xs text-[var(--text-soft)] hover:text-[var(--text-main)]"
+            >
+              Annuler
+            </button>
+          </div>
+
+          {negotiationState.status === 'rejected' ? (
+            <div className="rounded border border-[var(--warn-border)] bg-[var(--warn-bg)] px-4 py-3 text-sm text-[var(--warn-text)]">
+              Negociation echouee. L equipe adverse refuse de negocier davantage.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {negotiationState.counterPrice ? (
+                <p className="rounded border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-text)]">
+                  Contre-offre recue: {formatBudgetShort(negotiationState.counterPrice)} (frais agent inclus: +{formatBudgetShort(negotiationState.agentFee)})
+                </p>
+              ) : null}
+              <div>
+                <div className="mb-1 flex items-center justify-between text-xs text-[var(--text-muted)]">
+                  <span>Ton offre</span>
+                  <span className="font-semibold text-[var(--text-main)]">{formatBudgetShort(Math.round(negoTarget.askingPrice * offerSlider / 100))}</span>
+                </div>
+                <input
+                  type="range"
+                  min={60}
+                  max={130}
+                  value={offerSlider}
+                  onChange={(event) => setOfferSlider(Number(event.target.value))}
+                  className="w-full accent-[var(--accent)]"
+                />
+                <div className="mt-1 flex justify-between text-[0.6rem] text-[var(--text-muted)]">
+                  <span>60%</span>
+                  <span>100% (prix demande)</span>
+                  <span>130%</span>
+                </div>
+              </div>
+              <div className="flex items-center justify-between text-xs text-[var(--text-soft)]">
+                <span>Frais agent ({Math.round(AGENT_FEE_PERCENT * 100)}%): {formatBudgetShort(Math.round(negoTarget.askingPrice * offerSlider / 100 * AGENT_FEE_PERCENT))}</span>
+                <span>Total: <span className="font-semibold text-[var(--text-main)]">{formatBudgetShort(Math.round(negoTarget.askingPrice * offerSlider / 100 * (1 + AGENT_FEE_PERCENT)))}</span></span>
+              </div>
+              <button
+                type="button"
+                onClick={() => onSubmitOffer(Math.round(negoTarget.askingPrice * offerSlider / 100))}
+                className="w-full rounded border border-[var(--accent)] bg-[color:rgba(200,170,110,0.2)] px-3 py-2 text-sm font-semibold uppercase tracking-[0.08em] text-[var(--text-main)] transition hover:bg-[color:rgba(200,170,110,0.32)]"
+              >
+                Envoyer l offre
+              </button>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {negotiationState?.status === 'accepted' && negoTarget ? (
+        <div className="col-span-full rounded border border-[var(--good-border)] bg-[var(--good-bg)] px-5 py-4">
+          <p className="font-heading text-lg uppercase tracking-[0.04em] text-[var(--good-text)]">
+            Deal conclu — {negoTarget.pseudo} rejoint l equipe !
+          </p>
+          <p className="text-sm text-[var(--text-soft)]">
+            Cout total: {formatBudgetShort(negotiationState.finalCost ?? 0)} (transfert + frais agent)
+          </p>
+          <button
+            type="button"
+            onClick={onCloseNegotiation}
+            className="mt-3 rounded border border-[var(--accent)] px-4 py-1.5 text-xs uppercase text-[var(--text-main)] hover:bg-[color:rgba(200,170,110,0.18)]"
+          >
+            Fermer
+          </button>
+        </div>
+      ) : null}
+
       <Panel title="Marche des transferts" subtitle={`Tresorerie: ${formatBudgetShort(budget)}`}>
         {transferMarket.length === 0 ? (
           <p className="text-sm text-[var(--text-soft)]">Aucun joueur disponible cette fenetre. Reviens plus tard.</p>
@@ -5569,18 +6646,17 @@ function RecrutementPage({
                       {formatBudgetShort(target.askingPrice ?? 0)}
                     </td>
                     <td>
-                      <button
-                        type="button"
-                        onClick={() => onSignPlayer?.(target.id)}
-                        disabled={!canAfford || target.signed}
-                        className={`rounded border px-2 py-1 text-[10px] uppercase tracking-wide ${
-                          canAfford && !target.signed
-                            ? 'border-[var(--accent)] bg-[color:rgba(200,170,110,0.18)] text-[var(--text-main)] hover:bg-[color:rgba(200,170,110,0.28)]'
-                            : 'cursor-not-allowed border-[var(--border-soft)] bg-[var(--surface-3)] text-[var(--text-muted)] opacity-70'
-                        }`}
-                      >
-                        {target.signed ? 'Signe' : canAfford ? 'Signer' : 'Fonds KO'}
-                      </button>
+                      {target.signed ? (
+                        <span className="text-[10px] font-semibold uppercase text-[var(--good-text)]">Signe</span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => onOpenNegotiation?.(target.id)}
+                          className="rounded border border-[var(--accent)] bg-[color:rgba(200,170,110,0.18)] px-2 py-1 text-[10px] uppercase tracking-wide text-[var(--text-main)] hover:bg-[color:rgba(200,170,110,0.28)]"
+                        >
+                          Negocier
+                        </button>
+                      )}
                     </td>
                   </tr>
                 )
@@ -5626,6 +6702,51 @@ function RecrutementPage({
             <p>Priorite 2: Support vocal lead</p>
             <p>Budget disponible: {formatBudgetShort(budget)}</p>
           </div>
+        </Panel>
+
+        <Panel title="Contrats a gerer" subtitle="Prolongations et expirations">
+          {expiringPlayers.length === 0 ? (
+            <p className="text-sm text-[var(--text-soft)]">Aucun contrat sensible cette saison.</p>
+          ) : (
+            <div className="space-y-2">
+              {expiringPlayers.map((player) => {
+                const profile = rosterProfiles[player.playerId] ?? baseRosterProfiles[player.playerId]
+                const endYear = profile?.contractEnd ?? getContractEndYear(player)
+                const isExpired = endYear <= CURRENT_SEASON_YEAR
+                const renewal = computeRenewalCost(player, 2)
+                return (
+                  <div
+                    key={`renewal-${player.playerId}`}
+                    className={`rounded border px-3 py-2 ${isExpired ? 'border-[var(--warn-border)] bg-[var(--warn-bg)]' : 'border-[var(--border-soft)] bg-[var(--surface-2)]'}`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-[var(--text-main)]">{player.joueur} <span className="text-[var(--text-muted)]">({player.role})</span></p>
+                        <p className={`text-[0.65rem] ${isExpired ? 'text-[var(--warn-text)]' : 'text-[var(--text-soft)]'}`}>
+                          {isExpired ? 'Contrat expire — agent libre!' : `Expire fin ${endYear}`}
+                        </p>
+                      </div>
+                      <div className="flex gap-1">
+                        {CONTRACT_DURATIONS.map((dur) => (
+                          <button
+                            key={`ren-${player.playerId}-${dur}`}
+                            type="button"
+                            onClick={() => onRenewContract?.(player.playerId, dur)}
+                            className="rounded border border-[var(--accent)] bg-[color:rgba(200,170,110,0.14)] px-2 py-1 text-[0.6rem] font-semibold text-[var(--text-main)] hover:bg-[color:rgba(200,170,110,0.25)]"
+                          >
+                            +{dur}an{dur > 1 ? 's' : ''}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <p className="mt-1 text-[0.6rem] text-[var(--text-muted)]">
+                      Prime signature (2 ans): {formatBudgetShort(renewal.signingBonus)} — Salaire: {formatBudgetShort(renewal.monthlySalary)}/mois
+                    </p>
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </Panel>
 
         <Panel title="Recruter ton staff" subtitle="L equipe derriere l equipe">
@@ -5675,6 +6796,14 @@ function StaffFinancesPage({
   sponsorContracts,
   boardObjectives,
   playerCount,
+  rosterSalaryTotal,
+  facilities,
+  onUpgradeFacility,
+  academyRoster,
+  onPromoteAcademy,
+  bootcampActive,
+  bootcampDaysLeft,
+  onLaunchBootcamp,
 }) {
   const staffRows = Object.entries(STAFF_CATALOG).map(([staffId, config]) => {
     const level = clamp(staffTeam?.[staffId] ?? 0, 0, STAFF_MAX_LEVEL)
@@ -5686,7 +6815,7 @@ function StaffFinancesPage({
     }
   })
 
-  const totalSalaries = (playerCount ?? 0) * DEFAULT_PLAYER_SALARY
+  const totalSalaries = rosterSalaryTotal ?? (playerCount ?? 0) * DEFAULT_PLAYER_SALARY
   const totalSponsors = (sponsorContracts ?? [])
     .filter((sponsor) => sponsor.status !== 'ended')
     .reduce((sum, sponsor) => sum + (sponsor.monthly ?? 0), 0)
@@ -5795,80 +6924,512 @@ function StaffFinancesPage({
           </div>
         </Panel>
       </div>
+
+      <div className="col-span-full space-y-4">
+        <Panel title="Installations" subtitle="Ameliore tes infrastructures pour booster l entrainement">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {Object.entries(FACILITY_CATALOG).map(([facilityId, config]) => {
+              const level = clamp(facilities?.[facilityId] ?? 0, 0, FACILITY_MAX_LEVEL)
+              const canUpgrade = level < FACILITY_MAX_LEVEL
+              const nextCost = canUpgrade ? config.upgradeCost[level + 1] ?? 0 : 0
+              const affordable = budget >= nextCost
+              return (
+                <div key={`fac-${facilityId}`} className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-3">
+                  <p className="font-heading text-sm uppercase tracking-[0.04em] text-[var(--text-main)]">
+                    {config.icon} {config.label}
+                  </p>
+                  <p className="text-[0.65rem] text-[var(--text-soft)]">{config.description}</p>
+                  <div className="mt-2 flex items-center gap-1">
+                    {[1, 2, 3].map((lvl) => (
+                      <div
+                        key={`dot-${facilityId}-${lvl}`}
+                        className={`h-2 flex-1 rounded ${lvl <= level ? 'bg-[var(--accent)]' : 'bg-[var(--surface-3)]'}`}
+                      />
+                    ))}
+                  </div>
+                  <p className="mt-1 text-[0.6rem] text-[var(--text-muted)]">
+                    Niveau {level}/{FACILITY_MAX_LEVEL} — Cout mensuel: {formatBudgetShort(config.monthlyCost[level] ?? 0)}
+                  </p>
+                  {canUpgrade ? (
+                    <button
+                      type="button"
+                      onClick={() => onUpgradeFacility?.(facilityId)}
+                      disabled={!affordable}
+                      className={`mt-2 w-full rounded border px-2 py-1 text-[0.65rem] font-semibold uppercase tracking-wide transition ${
+                        affordable
+                          ? 'border-[var(--accent)] bg-[color:rgba(200,170,110,0.18)] text-[var(--text-main)] hover:bg-[color:rgba(200,170,110,0.28)]'
+                          : 'cursor-not-allowed border-[var(--border-soft)] bg-[var(--surface-3)] text-[var(--text-muted)] opacity-60'
+                      }`}
+                    >
+                      Upgrade niv {level + 1} — {formatBudgetShort(nextCost)}
+                    </button>
+                  ) : (
+                    <p className="mt-2 text-[0.6rem] font-semibold text-[var(--accent)]">Niveau maximum</p>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </Panel>
+
+        <div className="grid gap-4 xl:grid-cols-2">
+          <Panel title="Bootcamp Coree" subtitle="Entrainement intensif temporaire">
+            <div className="text-sm text-[var(--text-soft)]">
+              <p>Envoie ton equipe en Coree pour 14 jours d entrainement intensif. Tous les gains d entrainement sont multiplies par x{BOOTCAMP_TRAINING_MULT} pendant la duree.</p>
+              <p className="mt-2 text-xs text-[var(--text-muted)]">Cout: {formatBudgetShort(BOOTCAMP_COST)}</p>
+            </div>
+            {bootcampActive ? (
+              <div className="mt-3 rounded border border-[var(--accent)] bg-[color:rgba(200,170,110,0.12)] px-3 py-2">
+                <p className="text-sm font-semibold text-[var(--accent)]">Bootcamp en cours — {bootcampDaysLeft} jour(s) restant(s)</p>
+                <div className="mt-1 h-2 rounded bg-[var(--surface-3)]">
+                  <div
+                    className="h-2 rounded bg-[var(--accent)]"
+                    style={{ width: `${((BOOTCAMP_DURATION_DAYS - (bootcampDaysLeft ?? 0)) / BOOTCAMP_DURATION_DAYS) * 100}%` }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={onLaunchBootcamp}
+                disabled={budget < BOOTCAMP_COST}
+                className={`mt-3 w-full rounded border px-3 py-2 text-sm font-semibold uppercase tracking-[0.08em] transition ${
+                  budget >= BOOTCAMP_COST
+                    ? 'border-[var(--accent)] bg-[color:rgba(200,170,110,0.2)] text-[var(--text-main)] hover:bg-[color:rgba(200,170,110,0.32)]'
+                    : 'cursor-not-allowed border-[var(--border-soft)] bg-[var(--surface-3)] text-[var(--text-muted)] opacity-60'
+                }`}
+              >
+                Lancer le bootcamp
+              </button>
+            )}
+          </Panel>
+
+          <Panel title="Academie" subtitle="Rookies en developpement">
+            {(academyRoster ?? []).length === 0 ? (
+              <p className="text-sm text-[var(--text-soft)]">Aucun joueur en academie.</p>
+            ) : (
+              <div className="space-y-2">
+                {(academyRoster ?? []).map((player) => (
+                  <div
+                    key={`acad-${player.playerId}`}
+                    className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-[var(--text-main)]">
+                          {player.joueur} <span className="text-[var(--text-muted)]">({player.role})</span>
+                        </p>
+                        <p className="text-[0.65rem] text-[var(--text-soft)]">
+                          {player.age} ans - {player.nationality} - Potentiel {player.potential >= 98 ? 'Elite' : 'Haut'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onPromoteAcademy?.(player.playerId)}
+                        className="rounded border border-[var(--accent)] bg-[color:rgba(200,170,110,0.18)] px-2 py-1 text-[0.6rem] font-semibold uppercase tracking-wide text-[var(--text-main)] hover:bg-[color:rgba(200,170,110,0.28)]"
+                      >
+                        Promouvoir
+                      </button>
+                    </div>
+                    <div className="mt-1 flex gap-3 text-[0.6rem] text-[var(--text-muted)]">
+                      <span>Lane {Math.round(player.laning / 5)}</span>
+                      <span>TF {Math.round(player.teamfight / 5)}</span>
+                      <span>Macro {Math.round(player.macro / 5)}</span>
+                      <span>Mech {Math.round(player.mechanics / 5)}</span>
+                    </div>
+                  </div>
+                ))}
+                <p className="text-[0.6rem] text-[var(--text-muted)]">Les joueurs en academie progressent passivement chaque jour.</p>
+              </div>
+            )}
+          </Panel>
+        </div>
+      </div>
     </div>
   )
 }
 
-function DataHubPage({ lastMatchReport, staffTeam }) {
+function VestiairePage({ roster, rosterProfiles, baseRosterProfiles, activeTeamName }) {
+  const safeRoster = roster ?? []
+  const chemistry = computeTeamChemistry(safeRoster, rosterProfiles, baseRosterProfiles)
+
+  const chemistryTone =
+    chemistry.score >= 5
+      ? { label: 'Excellente', color: 'text-[var(--good-text)]', bg: 'bg-[var(--good-bg)]', border: 'border-[var(--good-border)]' }
+      : chemistry.score >= 2
+        ? { label: 'Bonne', color: 'text-[var(--accent)]', bg: 'bg-[color:rgba(200,170,110,0.12)]', border: 'border-[var(--accent)]' }
+        : chemistry.score >= 0
+          ? { label: 'Neutre', color: 'text-[var(--text-soft)]', bg: 'bg-[var(--surface-2)]', border: 'border-[var(--border-soft)]' }
+          : { label: 'Tendue', color: 'text-[var(--warn-text)]', bg: 'bg-[var(--warn-bg)]', border: 'border-[var(--warn-border)]' }
+
+  const fatigueAlerts = safeRoster
+    .map((player) => {
+      const profile = rosterProfiles?.[player.playerId] ?? baseRosterProfiles?.[player.playerId]
+      return { player, profile, fatigue: profile?.fatigue ?? 0, condition: profile?.condition ?? 75 }
+    })
+    .filter((entry) => entry.fatigue >= 5 || entry.condition < 60)
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[1.8fr_1fr]">
+      <div className="space-y-4">
+        <Panel title="Chimie d equipe" subtitle={`Vestiaire - ${activeTeamName ?? ''}`}>
+          <div className={`mb-4 rounded border ${chemistryTone.border} ${chemistryTone.bg} px-4 py-3`}>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-heading text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">Score chimie</p>
+                <p className={`text-2xl font-bold ${chemistryTone.color}`}>{chemistry.score >= 0 ? `+${chemistry.score}` : chemistry.score}</p>
+              </div>
+              <p className={`text-sm font-semibold uppercase tracking-[0.08em] ${chemistryTone.color}`}>{chemistryTone.label}</p>
+            </div>
+            {chemistry.highlights.length ? (
+              <ul className="mt-3 space-y-1 text-xs text-[var(--text-soft)]">
+                {chemistry.highlights.map((line, index) => (
+                  <li key={`chem-hl-${index}`}>- {line}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-3 text-xs text-[var(--text-soft)]">Aucun duo marquant ni meneur clair identifies.</p>
+            )}
+          </div>
+
+          <div className="mb-2 font-heading text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">Duos cles</div>
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+            {chemistry.duoCores.map((duo) => {
+              const tone =
+                duo.bonus > 0
+                  ? 'border-[var(--good-border)] bg-[var(--good-bg)]'
+                  : duo.bonus < 0
+                    ? 'border-[var(--warn-border)] bg-[var(--warn-bg)]'
+                    : 'border-[var(--border-soft)] bg-[var(--surface-2)]'
+              return (
+                <div key={duo.label} className={`rounded border px-3 py-2 ${tone}`}>
+                  <p className="font-heading text-[0.65rem] uppercase tracking-[0.08em] text-[var(--text-muted)]">{duo.label}</p>
+                  <p className="text-sm font-semibold text-[var(--text-main)]">{duo.playerA} / {duo.playerB}</p>
+                  <p className="text-xs text-[var(--text-soft)]">{duo.bonus >= 0 ? `+${duo.bonus}` : duo.bonus}</p>
+                </div>
+              )
+            })}
+          </div>
+        </Panel>
+
+        <Panel title="Joueurs" subtitle="Traits, moral et fatigue">
+          <div className="space-y-2">
+            {safeRoster.map((player) => {
+              const profile = rosterProfiles?.[player.playerId] ?? baseRosterProfiles?.[player.playerId]
+              const traits = profile?.traits ?? []
+              const condition = profile?.condition ?? 75
+              const fatigue = profile?.fatigue ?? 0
+              const age = profile?.age ?? 21
+              const fatigueColor =
+                fatigue >= 7 ? 'text-[var(--warn-text)]' : fatigue >= 4 ? 'text-[var(--accent)]' : 'text-[var(--text-soft)]'
+              return (
+                <div
+                  key={`vest-${player.playerId}`}
+                  className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2"
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-heading text-sm uppercase tracking-[0.04em] text-[var(--text-main)]">
+                        {player.joueur} <span className="text-[var(--text-muted)]">- {player.role}</span>
+                      </p>
+                      <p className="text-[0.65rem] text-[var(--text-soft)]">{age} ans - Moral {player.moral}</p>
+                    </div>
+                    <div className="text-right text-[0.65rem]">
+                      <p className="text-[var(--text-muted)]">Condition {condition}</p>
+                      <p className={fatigueColor}>Fatigue {fatigue}</p>
+                    </div>
+                  </div>
+                  {traits.length ? (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {traits.map((traitId) => {
+                        const trait = TRAIT_CATALOG[traitId]
+                        if (!trait) return null
+                        return (
+                          <span
+                            key={`${player.playerId}-${traitId}`}
+                            className="rounded-full border border-[var(--border-soft)] px-2 py-0.5 text-[0.6rem] font-semibold"
+                            style={{ color: trait.color, borderColor: trait.color }}
+                            title={trait.description}
+                          >
+                            {trait.label}
+                          </span>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <p className="mt-1 text-[0.6rem] text-[var(--text-muted)]">Pas de trait vestiaire identifie.</p>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </Panel>
+      </div>
+
+      <div className="space-y-4">
+        <Panel title="Alerte fatigue" subtitle="Joueurs en zone rouge">
+          {fatigueAlerts.length === 0 ? (
+            <p className="text-sm text-[var(--text-soft)]">Aucun signal faible cote fatigue ou condition.</p>
+          ) : (
+            <ul className="space-y-2 text-xs text-[var(--text-soft)]">
+              {fatigueAlerts.map(({ player, fatigue, condition }) => (
+                <li
+                  key={`alert-${player.playerId}`}
+                  className="rounded border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2 text-[var(--warn-text)]"
+                >
+                  <p className="font-semibold">{player.joueur} ({player.role})</p>
+                  <p className="text-[0.65rem]">Fatigue: {fatigue} - Condition: {condition}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+
+        <Panel title="Bibliotheque traits" subtitle="Ce que chaque trait fait">
+          <ul className="space-y-2 text-[0.7rem] text-[var(--text-soft)]">
+            {Object.values(TRAIT_CATALOG).map((trait) => (
+              <li
+                key={`lib-${trait.id}`}
+                className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2"
+              >
+                <p className="font-semibold" style={{ color: trait.color }}>{trait.label}</p>
+                <p>{trait.description}</p>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      </div>
+    </div>
+  )
+}
+
+function DataHubPage({ lastMatchReport, staffTeam, matchHistory }) {
   const analystLevel = clamp(staffTeam?.dataAnalyst ?? 0, 0, STAFF_MAX_LEVEL)
   const breakdown = lastMatchReport?.postMatchBreakdown
   const hasBreakdown = Boolean(breakdown)
+  const history = matchHistory ?? []
+  const hasHistory = history.length > 0
 
-  const indicatorRows = hasBreakdown
-    ? [
-        ['Gold Diff @15', `${breakdown.goldDiffAt15 >= 0 ? '+' : ''}${breakdown.goldDiffAt15}`, breakdown.goldDiffAt15 >= 0 ? 'Early game domine' : 'Early game subi'],
-        ['Damage Share ADC', `${breakdown.adcShare}%`, breakdown.adcShare >= 28 ? 'Carry bien alimente' : 'Impact ADC insuffisant'],
-        ['Draft Impact', `${breakdown.draftImpactPercent >= 0 ? '+' : ''}${breakdown.draftImpactPercent}%`, breakdown.draftImpactNote],
-      ]
-    : [
-        ['Winrate avec 1er Dragon', '80%', 'Condition de victoire majeure'],
-        ['Winrate sans 1er Dragon', '20%', 'Deficit de tempo'],
-        ['Moyenne gold @15', '+1240', 'Early game solide'],
-        ['Taux de conversion Nashor', '71%', 'Bonne discipline macro'],
-      ]
+  // Aggregate stats from matchHistory
+  const totalMatches = history.length
+  const totalWins = history.filter((entry) => entry.isWin).length
+  const totalLosses = totalMatches - totalWins
+  const winrate = totalMatches > 0 ? Math.round((totalWins / totalMatches) * 100) : 0
+
+  // Current streak (most recent first, so we walk forward)
+  let currentStreak = 0
+  let streakType = null
+  if (hasHistory) {
+    const firstResult = history[0].isWin
+    streakType = firstResult ? 'V' : 'D'
+    for (const entry of history) {
+      if (entry.isWin === firstResult) {
+        currentStreak += 1
+      } else {
+        break
+      }
+    }
+  }
+
+  // Best winstreak (walk through history)
+  let bestWinStreak = 0
+  let runningWin = 0
+  for (const entry of [...history].reverse()) {
+    if (entry.isWin) {
+      runningWin += 1
+      if (runningWin > bestWinStreak) bestWinStreak = runningWin
+    } else {
+      runningWin = 0
+    }
+  }
+
+  // Head-to-head records by opponent
+  const h2h = history.reduce((acc, entry) => {
+    const key = entry.opponent
+    if (!acc[key]) acc[key] = { wins: 0, losses: 0 }
+    if (entry.isWin) acc[key].wins += 1
+    else acc[key].losses += 1
+    return acc
+  }, {})
+  const h2hRows = Object.entries(h2h)
+    .map(([opponent, rec]) => ({ opponent, ...rec, total: rec.wins + rec.losses }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 8)
+
+  // Wins by stage
+  const stageStats = history.reduce((acc, entry) => {
+    const stage = entry.stage ?? 'Regulier'
+    if (!acc[stage]) acc[stage] = { wins: 0, losses: 0 }
+    if (entry.isWin) acc[stage].wins += 1
+    else acc[stage].losses += 1
+    return acc
+  }, {})
+  const stageRows = Object.entries(stageStats).map(([stage, rec]) => ({ stage, ...rec }))
+
+  const recentMatches = history.slice(0, 12)
 
   return (
     <div className="grid gap-4 xl:grid-cols-[2fr_1fr]">
-      <Panel title="Centre de donnees" subtitle="Pourquoi on gagne ou on perd">
-        {analystLevel === 0 ? (
-          <p className="mb-3 rounded border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-text)]">
-            Analyste Data non recrute: les indicateurs avances restent approximatifs.
-          </p>
+      <div className="space-y-4">
+        <Panel title="Centre de donnees" subtitle={`${totalMatches} matchs joues - ${winrate}% victoire`}>
+          {analystLevel === 0 ? (
+            <p className="mb-3 rounded border border-[var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2 text-xs text-[var(--warn-text)]">
+              Analyste Data non recrute: les indicateurs avances restent approximatifs.
+            </p>
+          ) : null}
+
+          <div className="grid gap-3 sm:grid-cols-4">
+            <div className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
+              <p className="text-xs uppercase tracking-[0.1em] text-[var(--text-muted)]">Matchs</p>
+              <p className="text-xl font-bold text-[var(--text-main)]">{totalMatches}</p>
+            </div>
+            <div className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
+              <p className="text-xs uppercase tracking-[0.1em] text-[var(--text-muted)]">Winrate</p>
+              <p className={`text-xl font-bold ${winrate >= 55 ? 'text-[var(--success)]' : winrate >= 45 ? 'text-[var(--text-main)]' : 'text-[var(--danger)]'}`}>
+                {winrate}%
+              </p>
+            </div>
+            <div className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
+              <p className="text-xs uppercase tracking-[0.1em] text-[var(--text-muted)]">Streak actuelle</p>
+              <p className="text-xl font-bold text-[var(--text-main)]">
+                {currentStreak > 0 ? `${currentStreak}${streakType}` : '-'}
+              </p>
+            </div>
+            <div className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
+              <p className="text-xs uppercase tracking-[0.1em] text-[var(--text-muted)]">Meilleure serie</p>
+              <p className="text-xl font-bold text-[var(--text-main)]">{bestWinStreak}V</p>
+            </div>
+          </div>
+
+          {hasBreakdown ? (
+            <table className="fm-data-table mt-4">
+              <thead>
+                <tr>
+                  <th>Indicateur dernier match</th>
+                  <th>Valeur</th>
+                  <th>Interpretation</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Gold Diff @15</td>
+                  <td>{breakdown.goldDiffAt15 >= 0 ? '+' : ''}{breakdown.goldDiffAt15}</td>
+                  <td>{breakdown.goldDiffAt15 >= 0 ? 'Early game domine' : 'Early game subi'}</td>
+                </tr>
+                <tr>
+                  <td>Damage Share ADC</td>
+                  <td>{breakdown.adcShare}%</td>
+                  <td>{breakdown.adcShare >= 28 ? 'Carry bien alimente' : 'Impact ADC insuffisant'}</td>
+                </tr>
+                <tr>
+                  <td>Draft Impact</td>
+                  <td>{breakdown.draftImpactPercent >= 0 ? '+' : ''}{breakdown.draftImpactPercent}%</td>
+                  <td>{breakdown.draftImpactNote}</td>
+                </tr>
+              </tbody>
+            </table>
+          ) : null}
+        </Panel>
+
+        {recentMatches.length > 0 ? (
+          <Panel title="Historique recent" subtitle="12 derniers matchs">
+            <table className="fm-data-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Adversaire</th>
+                  <th>Stage</th>
+                  <th>Score</th>
+                  <th>Resultat</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentMatches.map((entry) => (
+                  <tr key={entry.matchId ?? `${entry.dateKey}-${entry.opponent}`}>
+                    <td className="text-xs text-[var(--text-muted)]">{entry.dateKey}</td>
+                    <td className="font-semibold text-[var(--text-main)]">{entry.opponent}</td>
+                    <td className="text-xs">{entry.stage}</td>
+                    <td>{entry.score ?? '-'}</td>
+                    <td>
+                      <span
+                        className={`rounded px-2 py-0.5 text-xs font-semibold ${
+                          entry.isWin
+                            ? 'bg-[color:rgba(100,180,120,0.15)] text-[var(--success)]'
+                            : 'bg-[color:rgba(220,90,90,0.15)] text-[var(--danger)]'
+                        }`}
+                      >
+                        {entry.isWin ? 'Victoire' : 'Defaite'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
+        ) : null}
+      </div>
+
+      <div className="space-y-4">
+        <Panel title="Head-to-head" subtitle="Records par adversaire">
+          {h2hRows.length > 0 ? (
+            <table className="fm-data-table">
+              <thead>
+                <tr>
+                  <th>Adversaire</th>
+                  <th className="text-right">Bilan</th>
+                </tr>
+              </thead>
+              <tbody>
+                {h2hRows.map((row) => (
+                  <tr key={row.opponent}>
+                    <td className="font-semibold text-[var(--text-main)]">{row.opponent}</td>
+                    <td className="text-right">
+                      <span className="text-[var(--success)]">{row.wins}V</span>
+                      {' / '}
+                      <span className="text-[var(--danger)]">{row.losses}D</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="text-sm text-[var(--text-muted)]">Aucun match joue pour l instant.</p>
+          )}
+        </Panel>
+
+        {stageRows.length > 0 ? (
+          <Panel title="Par phase de saison" subtitle="Printemps / Ete / Playoffs">
+            <table className="fm-data-table">
+              <thead>
+                <tr>
+                  <th>Stage</th>
+                  <th className="text-right">Bilan</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stageRows.map((row) => (
+                  <tr key={row.stage}>
+                    <td>{row.stage}</td>
+                    <td className="text-right">
+                      <span className="text-[var(--success)]">{row.wins}V</span>
+                      {' / '}
+                      <span className="text-[var(--danger)]">{row.losses}D</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Panel>
         ) : null}
 
-        <table className="fm-data-table">
-          <thead>
-            <tr>
-              <th>Indicateur</th>
-              <th>Valeur</th>
-              <th>Interpretation</th>
-            </tr>
-          </thead>
-          <tbody>
-            {indicatorRows.map((row) => (
-              <tr key={row[0]}>
-                {row.map((cell) => (
-                  <td key={cell}>{cell}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Panel>
-
-      <Panel title="Signal fort" subtitle="Lecture rapide">
-        <div className="space-y-3 text-sm text-[var(--text-soft)]">
-          {hasBreakdown ? (
-            <>
-              <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
-                Gold diff @15: {breakdown.goldDiffAt15 >= 0 ? 'vous aviez le tempo early.' : 'vous etiez sous pression en early.'}
-              </p>
-              <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
-                {breakdown.draftImpactNote}
-              </p>
-            </>
-          ) : (
-            <>
-              <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
-                6 defaites sur 7 quand la bot lane est derriere de 800g a 12 min.
-              </p>
-              <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
-                75% de victoire quand Miro obtient un counter pick.
-              </p>
-            </>
-          )}
-        </div>
-      </Panel>
+        {!hasHistory ? (
+          <Panel title="Pas encore d historique" subtitle="Joue des matchs pour alimenter">
+            <p className="text-sm text-[var(--text-muted)]">
+              Le Centre de donnees se remplira automatiquement a chaque match joue.
+            </p>
+          </Panel>
+        ) : null}
+      </div>
     </div>
   )
 }
@@ -6456,9 +8017,15 @@ function App() {
   const [rythmeJeu, setRythmeJeu] = useState(52)
   const [prioriteObjectifs, setPrioriteObjectifs] = useState(47)
   const [focusJoueur, setFocusJoueur] = useState('Miro')
+  const [shotcallerRole, setShotcallerRole] = useState('Mid')
+  const [strongSide, setStrongSide] = useState('bot')
+  const [teamfightStyleId, setTeamfightStyleId] = useState(DEFAULT_TEAMFIGHT_STYLE_ID)
+  const [winConditionRole, setWinConditionRole] = useState('ADC')
+  const [laneInstructions, setLaneInstructions] = useState(DEFAULT_LANE_INSTRUCTIONS)
   const [saveMessage, setSaveMessage] = useState('')
   const [staffTeam, setStaffTeam] = useState(DEFAULT_STAFF_TEAM)
   const [matchApproachById, setMatchApproachById] = useState({})
+  const [matchApproachByGameById, setMatchApproachByGameById] = useState({})
   const [matchDraftById, setMatchDraftById] = useState({})
   const [matchFlowStepById, setMatchFlowStepById] = useState({})
   const [liveMatchSession, setLiveMatchSession] = useState(null)
@@ -6490,6 +8057,11 @@ function App() {
   }))
   const [patchHistory, setPatchHistory] = useState(() => [])
   const [transferMarket, setTransferMarket] = useState(() => buildTransferMarketFromPool(null, 8))
+  const [negotiationState, setNegotiationState] = useState(null) // { targetId, round, lastOffer, counterPrice, status }
+  const [facilities, setFacilities] = useState(DEFAULT_FACILITIES)
+  const [academyRoster, setAcademyRoster] = useState(() => buildAcademyRoster('kc'))
+  const [bootcampActive, setBootcampActive] = useState(false)
+  const [bootcampDaysLeft, setBootcampDaysLeft] = useState(0)
   const [matchHistory, setMatchHistory] = useState([])
 
   const activeLeague = LEAGUES[selectedLeagueId]
@@ -6534,14 +8106,19 @@ function App() {
 
   const effectifAvecBonusTier = applyLeagueTierBonusToPlayers(baseRosterPlayers, activeLeague).map((player) => {
     const profile = rosterProfiles[player.playerId] ?? baseRosterProfiles[player.playerId]
+    // SoloQ LP boost: +1 mechanics per 120 LP above baseline (640), capped at +8
+    const lp = profile?.ladderLP ?? 640
+    const soloQBonus = clamp(Math.floor(Math.max(0, lp - 640) / 120), 0, 8)
     return {
       ...player,
       teamfight: clamp(player.teamfight + (profile?.teamfightBonus ?? 0), 1, 99),
-      mechanics: clamp(player.mechanics + (profile?.mechanicsBonus ?? 0), 1, 99),
+      mechanics: clamp(player.mechanics + (profile?.mechanicsBonus ?? 0) + soloQBonus, 1, 99),
       macro: clamp(player.macro + (profile?.macroBonus ?? 0), 1, 99),
       mental: clamp(profile?.mental ?? player.mental ?? 14, 1, 20),
       moral: profile?.moral ?? player.moral,
       forme: profile ? (profile.condition / 10).toFixed(1) : player.forme,
+      soloQBonus,
+      ladderLP: lp,
     }
   })
   const selectedPlayerData = effectifAvecBonusTier.find((player) => player.playerId === activeRosterPlayerId) ?? null
@@ -6578,6 +8155,17 @@ function App() {
   const opponentTeamId = matchToday ? findTeamIdForLeague(selectedLeagueId, matchToday.opponent) : null
   const opponentRoster = opponentTeamId ? leagueProPlayers.filter((player) => player.team_id === opponentTeamId) : []
   const opponentComfortPool = buildOpponentComfortPool(opponentRoster)
+
+  // For Rapport Analyste: use today's match if any, otherwise next upcoming
+  const nextUpcomingMatch =
+    matchToday ?? activeSchedule.find((match) => match.status === 'upcoming') ?? null
+  const nextOpponentTeamId = nextUpcomingMatch
+    ? findTeamIdForLeague(selectedLeagueId, nextUpcomingMatch.opponent)
+    : null
+  const nextOpponentRoster = nextOpponentTeamId
+    ? leagueProPlayers.filter((player) => player.team_id === nextOpponentTeamId)
+    : []
+  const nextOpponentComfortPool = buildOpponentComfortPool(nextOpponentRoster)
   const playerComfortPool = buildPlayerComfortPool(effectifAvecBonusTier, rosterProfiles, baseRosterProfiles)
   const activeDraftState = matchToday ? (matchDraftById[matchToday.id] ?? createEmptyDraftState()) : createEmptyDraftState()
   const enemyBans = matchToday
@@ -6875,6 +8463,85 @@ function App() {
     })
   }
 
+  const handleUpgradeFacility = (facilityId) => {
+    const config = FACILITY_CATALOG[facilityId]
+    if (!config) return
+    const currentLevel = clamp(facilities[facilityId] ?? 0, 0, FACILITY_MAX_LEVEL)
+    if (currentLevel >= FACILITY_MAX_LEVEL) return
+    const nextLevel = currentLevel + 1
+    const cost = config.upgradeCost[nextLevel] ?? 0
+    if (budget < cost) {
+      setTimeNotification(`Fonds insuffisants: ${formatBudgetShort(cost)} requis pour ${config.label} niv ${nextLevel}.`)
+      return
+    }
+    setBudget((prev) => prev - cost)
+    setFinanceLedger((prev) => [
+      {
+        id: `facility-${facilityId}-${Date.now()}`,
+        label: `Upgrade ${config.label} niv ${nextLevel}`,
+        amount: -cost,
+        date: currentDate.toISOString(),
+      },
+      ...prev,
+    ].slice(0, 50))
+    setFacilities((prev) => ({ ...prev, [facilityId]: nextLevel }))
+    setTimeNotification(`${config.icon} ${config.label} upgrade au niveau ${nextLevel}!`)
+  }
+
+  const handleLaunchBootcamp = () => {
+    if (bootcampActive) {
+      setTimeNotification('Bootcamp deja en cours.')
+      return
+    }
+    if (budget < BOOTCAMP_COST) {
+      setTimeNotification(`Fonds insuffisants pour le bootcamp (${formatBudgetShort(BOOTCAMP_COST)} requis).`)
+      return
+    }
+    setBudget((prev) => prev - BOOTCAMP_COST)
+    setFinanceLedger((prev) => [
+      {
+        id: `bootcamp-${Date.now()}`,
+        label: 'Bootcamp Coree (14 jours)',
+        amount: -BOOTCAMP_COST,
+        date: currentDate.toISOString(),
+      },
+      ...prev,
+    ].slice(0, 50))
+    setBootcampActive(true)
+    setBootcampDaysLeft(BOOTCAMP_DURATION_DAYS)
+    setTimeNotification(`Bootcamp Coree lance — ${BOOTCAMP_DURATION_DAYS} jours d entrainement intensif!`)
+  }
+
+  const handlePromoteAcademy = (playerId) => {
+    const academyPlayer = academyRoster.find((p) => p.playerId === playerId)
+    if (!academyPlayer) return
+    setRosterProfiles((prev) => ({
+      ...prev,
+      [playerId]: {
+        ...(prev[playerId] ?? {}),
+        pseudo: academyPlayer.joueur.toUpperCase(),
+        realName: academyPlayer.realName,
+        age: academyPlayer.age,
+        nationality: academyPlayer.nationality,
+        marketValue: formatEuroValue(academyPlayer.salary * 12),
+        condition: 75,
+        moral: 'Bon',
+        ladderLP: clamp(400 + (stableHash(`${playerId}-lp`) % 300), 0, 1800),
+        confident: false,
+        teamfightBonus: 0, mechanicsBonus: 0, macroBonus: 0, visionBonus: 0, draftBonus: 0, synergyBonus: 0,
+        potential: academyPlayer.potential,
+        matchHistory: [],
+        traits: pickTraitsForProfile(playerId),
+        fatigue: 0,
+        contractEnd: CURRENT_SEASON_YEAR + 3,
+        salary: academyPlayer.salary,
+        championMastery: {},
+      },
+    }))
+    setAcademyRoster((prev) => prev.filter((p) => p.playerId !== playerId))
+    setTimeNotification(`${academyPlayer.joueur} promu de l academie au roster principal!`)
+  }
+
   const handleSignPlayer = (playerId) => {
     const target = transferMarket.find((entry) => entry.id === playerId)
     if (!target || target.signed) {
@@ -6927,6 +8594,138 @@ function App() {
     }))
 
     setTimeNotification(`Signature: ${target.pseudo} (${target.role}) rejoint l'equipe pour ${formatBudgetShort(target.askingPrice)}.`)
+  }
+
+  const handleOpenNegotiation = (playerId) => {
+    const target = transferMarket.find((entry) => entry.id === playerId)
+    if (!target || target.signed) return
+    setNegotiationState({
+      targetId: playerId,
+      round: 0,
+      lastOffer: null,
+      counterPrice: null,
+      status: 'open',
+      agentFee: Math.round(target.askingPrice * AGENT_FEE_PERCENT),
+    })
+  }
+
+  const handleSubmitOffer = (offerPrice) => {
+    if (!negotiationState || negotiationState.status !== 'open') return
+    const target = transferMarket.find((entry) => entry.id === negotiationState.targetId)
+    if (!target) return
+
+    const totalCost = offerPrice + Math.round(offerPrice * AGENT_FEE_PERCENT)
+    if (budget < totalCost) {
+      setTimeNotification(`Budget insuffisant: il faut ${formatBudgetShort(totalCost)} (transfert + frais agent).`)
+      return
+    }
+
+    const response = computeNegotiationResponse(
+      target.id, offerPrice, target.askingPrice, negotiationState.round,
+    )
+
+    if (response.result === 'accepted') {
+      // Deal is done — sign the player at the agreed price
+      const agentFee = Math.round(offerPrice * AGENT_FEE_PERCENT)
+      const finalCost = offerPrice + agentFee
+      setBudget((prev) => prev - finalCost)
+      setFinanceLedger((prev) => [
+        {
+          id: `transfer-${target.id}-${Date.now()}`,
+          label: `Transfert ${target.pseudo} (${target.role})`,
+          amount: -offerPrice,
+          date: currentDate.toISOString(),
+        },
+        {
+          id: `agent-${target.id}-${Date.now()}`,
+          label: `Frais agent - ${target.pseudo}`,
+          amount: -agentFee,
+          date: currentDate.toISOString(),
+        },
+        ...prev,
+      ].slice(0, 50))
+      setTransferMarket((prev) =>
+        prev.map((entry) => (entry.id === target.id ? { ...entry, signed: true } : entry)),
+      )
+      setRosterProfiles((prev) => ({
+        ...prev,
+        [target.id]: {
+          ...(prev[target.id] ?? {}),
+          pseudo: target.pseudo,
+          realName: target.realName,
+          age: target.age,
+          nationality: 'Inconnue',
+          marketValue: formatEuroValue(offerPrice),
+          condition: 72,
+          moral: 'Bon',
+          ladderLP: 850,
+          confident: false,
+          teamfightBonus: 0, mechanicsBonus: 0, macroBonus: 0, visionBonus: 0, draftBonus: 0, synergyBonus: 0,
+          potential: target.potential,
+          matchHistory: ['V', 'D', 'V'],
+          traits: pickTraitsForProfile(target.id),
+          fatigue: 0,
+          contractEnd: CURRENT_SEASON_YEAR + 2,
+          salary: computePlayerSalary(target.stats),
+          championMastery: {},
+        },
+      }))
+      setNegotiationState({
+        ...negotiationState,
+        status: 'accepted',
+        lastOffer: offerPrice,
+        finalCost,
+      })
+      setTimeNotification(`Deal conclu: ${target.pseudo} signe pour ${formatBudgetShort(offerPrice)} + ${formatBudgetShort(agentFee)} frais agent.`)
+    } else if (response.result === 'counter') {
+      setNegotiationState({
+        ...negotiationState,
+        round: negotiationState.round + 1,
+        lastOffer: offerPrice,
+        counterPrice: response.counterPrice,
+        agentFee: Math.round(response.counterPrice * AGENT_FEE_PERCENT),
+        status: negotiationState.round >= 2 ? 'rejected' : 'open',
+      })
+      if (negotiationState.round >= 2) {
+        setTimeNotification(`Negociation echouee: l equipe de ${target.pseudo} refuse de descendre plus bas.`)
+      }
+    } else {
+      setNegotiationState({ ...negotiationState, status: 'rejected', lastOffer: offerPrice })
+      setTimeNotification(`Offre rejetee: ${target.pseudo} refuse ${formatBudgetShort(offerPrice)}. Trop loin du prix demande.`)
+    }
+  }
+
+  const handleCloseNegotiation = () => {
+    setNegotiationState(null)
+  }
+
+  const handleRenewContract = (playerId, newDuration) => {
+    const player = effectifAvecBonusTier.find((p) => p.playerId === playerId)
+    if (!player) return
+    const renewal = computeRenewalCost(player, newDuration)
+    if (budget < renewal.signingBonus) {
+      setTimeNotification(`Budget insuffisant pour la prime de signature (${formatBudgetShort(renewal.signingBonus)}).`)
+      return
+    }
+    setBudget((prev) => prev - renewal.signingBonus)
+    setFinanceLedger((prev) => [
+      {
+        id: `renewal-${playerId}-${Date.now()}`,
+        label: `Prolongation ${player.joueur} (${newDuration} ans)`,
+        amount: -renewal.signingBonus,
+        date: currentDate.toISOString(),
+      },
+      ...prev,
+    ].slice(0, 50))
+    setRosterProfiles((prev) => ({
+      ...prev,
+      [playerId]: {
+        ...(prev[playerId] ?? {}),
+        contractEnd: CURRENT_SEASON_YEAR + newDuration,
+        salary: renewal.monthlySalary,
+      },
+    }))
+    setTimeNotification(`Prolongation: ${player.joueur} a signe pour ${newDuration} ans (prime ${formatBudgetShort(renewal.signingBonus)}).`)
   }
 
   const handleLaunchScout = () => {
@@ -7112,6 +8911,19 @@ function App() {
       ...previous,
       [matchId]: approachId,
     }))
+  }
+
+  const handleSelectGameApproach = (matchId, gameIndex, approachId) => {
+    if (!matchId || gameIndex == null) {
+      return
+    }
+
+    setMatchApproachByGameById((previous) => {
+      const existing = previous[matchId] ?? []
+      const next = [...existing]
+      next[gameIndex] = approachId
+      return { ...previous, [matchId]: next }
+    })
   }
 
   const setMatchFlowStep = (matchId, step) => {
@@ -7514,6 +9326,7 @@ function App() {
       rosterProfiles,
       baseRosterProfiles,
       approachId: selectedApproachId,
+      approachByGame: matchApproachByGameById[match.id] ?? null,
       draftScore: draftScore.score,
       seriesType: match.seriesType ?? 'BO1',
       mentalCoachLevel,
@@ -7522,6 +9335,11 @@ function App() {
       rythmeJeu,
       prioriteObjectifs,
       metaPatchInfluence: metaPatchState,
+      shotcallerRole,
+      strongSide,
+      teamfightStyleId,
+      winConditionRole,
+      laneInstructions,
     })
 
     const rawProjectedWithDraft = computeProjectedWinRateWithDraft(
@@ -7984,17 +9802,22 @@ function App() {
 
           activities.forEach((activityId, slotIndex) => {
             const randomSeed = stableHash(`${playerId}-${todayKey}-${slotIndex}-${activityId}`)
+            const facilityMult = getFacilityTrainingMultiplier(facilities, activityId)
+            const bootcampMult = bootcampActive ? BOOTCAMP_TRAINING_MULT : 1
+            const totalMult = facilityMult * bootcampMult
 
             if (activityId === 'scrims') {
               updated.condition = clamp(updated.condition - 15, 0, 100)
-              applyStatGain('teamfightBonus', 1)
+              const gain = Math.round(1 * totalMult)
+              for (let i = 0; i < gain; i++) applyStatGain('teamfightBonus', 1)
               scrimCount += 1
               return
             }
 
             if (activityId === 'soloq') {
               updated.condition = clamp(updated.condition - 10, 0, 100)
-              applyStatGain('mechanicsBonus', 1)
+              const gain = Math.round(1 * totalMult)
+              for (let i = 0; i < gain; i++) applyStatGain('mechanicsBonus', 1)
               const rawDelta = SOLOQ_TUNING.active.randomFloor + (randomSeed % SOLOQ_TUNING.active.randomRange)
               const mechanicsScore = clamp(Math.round((player.mechanics ?? 70) / 5), 1, 20)
               const mentalScore = clamp(updated.mental ?? player.mental ?? 14, 1, 20)
@@ -8020,14 +9843,14 @@ function App() {
 
             if (activityId === 'vod_review') {
               updated.condition = clamp(updated.condition - 5, 0, 100)
-              applyStatGain('macroBonus', 1)
-              applyStatGain('visionBonus', 1)
+              const vodGain = Math.round(1 * totalMult)
+              for (let i = 0; i < vodGain; i++) { applyStatGain('macroBonus', 1); applyStatGain('visionBonus', 1) }
               return
             }
 
             if (activityId === 'theorycrafting') {
               updated.condition = clamp(updated.condition - 5, 0, 100)
-              applyStatGain('draftBonus', 2)
+              applyStatGain('draftBonus', Math.round(2 * totalMult))
               const keys = Object.keys(updated.championMastery)
                 .sort((a, b) => (updated.championMastery[b] ?? 0) - (updated.championMastery[a] ?? 0))
                 .slice(0, 3)
@@ -8040,8 +9863,10 @@ function App() {
             }
 
             if (activityId === 'rest') {
-              updated.condition = clamp(updated.condition + 20, 0, 100)
+              const restGain = Math.round(20 * totalMult)
+              updated.condition = clamp(updated.condition + restGain, 0, 100)
               updated.moral = increaseMorale(updated.moral)
+              updated.fatigue = Math.max(0, (updated.fatigue ?? 0) - 1)
             }
           })
 
@@ -8234,9 +10059,13 @@ function App() {
         patchNotice = `Patch ${nextPatch}: ${boostedArchetype} buff, ${nerfedArchetype} nerf.`
 
         // Monthly finance: staff cost + salaries deduction + sponsor revenue
-        const totalSalary = baseRosterPlayers.length * DEFAULT_PLAYER_SALARY
+        const totalSalary = baseRosterPlayers.reduce((sum, player) => {
+          const prof = rosterProfiles[player.playerId] ?? baseRosterProfiles[player.playerId]
+          return sum + (prof?.salary ?? DEFAULT_PLAYER_SALARY)
+        }, 0)
         const staffMonthly = computeStaffMonthlyCost(staffTeam)
-        const monthlyDebitAmount = totalSalary + staffMonthly
+        const facilityMonthly = computeFacilityMonthlyCost(facilities)
+        const monthlyDebitAmount = totalSalary + staffMonthly + facilityMonthly
         const sponsorMonthly = sponsorContracts
           .filter((sponsor) => sponsor.status === 'active')
           .reduce((sum, sponsor) => sum + (sponsor.monthly ?? 0), 0)
@@ -8253,6 +10082,12 @@ function App() {
             id: `staff-${toDateKey(nextDate)}`,
             label: 'Salaires staff',
             amount: -staffMonthly,
+            date: nextDate.toISOString(),
+          },
+          {
+            id: `facility-${toDateKey(nextDate)}`,
+            label: 'Maintenance installations',
+            amount: -facilityMonthly,
             date: nextDate.toISOString(),
           },
           {
@@ -8366,8 +10201,29 @@ function App() {
         ? `Match imminent demain contre ${upcomingMatch.opponent}.`
         : ''
 
+      // Bootcamp countdown
+      if (bootcampActive) {
+        const newDaysLeft = bootcampDaysLeft - 1
+        if (newDaysLeft <= 0) {
+          setBootcampActive(false)
+          setBootcampDaysLeft(0)
+        } else {
+          setBootcampDaysLeft(newDaysLeft)
+        }
+      }
+
+      // Academy passive training (small gains per day)
+      setAcademyRoster((prev) => prev.map((player) => {
+        const daySeed = stableHash(`${player.playerId}-${todayKey}-academy`)
+        const statGain = daySeed % 3 === 0 ? 1 : 0
+        const statTarget = ['laning', 'teamfight', 'macro', 'mechanics'][daySeed % 4]
+        return statGain ? { ...player, [statTarget]: clamp((player[statTarget] ?? 50) + statGain, 10, 85) } : player
+      }))
+
+      const bootcampNotice = bootcampActive ? ` Bootcamp Coree: ${bootcampDaysLeft}j restants.` : ''
+
       const summaryNotice =
-        `${patchNotice} ${financeNotice} ${scoutingNotice} ${matchNotice}`.trim() ||
+        `${patchNotice} ${financeNotice} ${scoutingNotice} ${matchNotice}${bootcampNotice}`.trim() ||
         `Jour avance au ${formatDateLong(nextDate)}. Slots appliques: ${activities.join(' + ')} (SoloQ: ${soloQCount}).`
 
       setCurrentDate(nextDate)
@@ -8390,6 +10246,7 @@ function App() {
         onOpenSoloQLadder={handleOpenSoloQLadder}
         soloQPreview={soloQPreview}
         matchDayInsights={dashboardMatchInsights}
+        teamChemistry={computeTeamChemistry(effectifAvecBonusTier, rosterProfiles, baseRosterProfiles)}
       />
     ),
     championnat: (
@@ -8436,16 +10293,32 @@ function App() {
         onChangePrioriteObjectifs={setPrioriteObjectifs}
         focusJoueur={focusJoueur}
         onChangeFocusJoueur={setFocusJoueur}
+        shotcallerRole={shotcallerRole}
+        onChangeShotcallerRole={setShotcallerRole}
+        strongSide={strongSide}
+        onChangeStrongSide={setStrongSide}
+        teamfightStyleId={teamfightStyleId}
+        onChangeTeamfightStyle={setTeamfightStyleId}
+        winConditionRole={winConditionRole}
+        onChangeWinConditionRole={setWinConditionRole}
+        laneInstructions={laneInstructions}
+        onChangeLaneInstruction={(role, instructionId) => setLaneInstructions((prev) => ({ ...prev, [role]: instructionId }))}
+        roster={effectifAvecBonusTier}
         onSaveTactique={handleSaveTactique}
         saveMessage={saveMessage}
       />
     ),
     'rapport-analyste': (
       <RapportAnalystePage
+        nextMatch={nextUpcomingMatch}
+        opponentRoster={nextOpponentRoster}
+        opponentComfortPool={nextOpponentComfortPool}
+        analystLevel={analystLevel}
+        headScoutLevel={headScoutLevel}
+        metaPatchState={metaPatchState}
         aggressivite={aggressivite}
         rythmeJeu={rythmeJeu}
         prioriteObjectifs={prioriteObjectifs}
-        focusJoueur={focusJoueur}
       />
     ),
     entrainement: (
@@ -8479,6 +10352,10 @@ function App() {
         approachOptions={MATCH_APPROACHES}
         selectedApproachId={selectedMatchApproachId}
         onSelectApproach={(approachId) => handleSelectMatchApproach(matchToday?.id, approachId)}
+        approachByGame={matchToday ? (matchApproachByGameById[matchToday.id] ?? []) : []}
+        onSelectGameApproach={(gameIndex, approachId) =>
+          handleSelectGameApproach(matchToday?.id, gameIndex, approachId)
+        }
         opponentComfortPool={opponentComfortPool}
         enemyBans={enemyBans}
         draftState={activeDraftState}
@@ -8516,10 +10393,26 @@ function App() {
         onUpgradeStaff={handleUpgradeStaff}
         transferMarket={transferMarket}
         onSignPlayer={handleSignPlayer}
+        onOpenNegotiation={handleOpenNegotiation}
+        onSubmitOffer={handleSubmitOffer}
+        onCloseNegotiation={handleCloseNegotiation}
+        onRenewContract={handleRenewContract}
+        negotiationState={negotiationState}
         budget={budget}
         scoutingQueue={scoutingQueue}
         onLaunchScout={handleLaunchScout}
         headScoutLevel={headScoutLevel}
+        roster={effectifAvecBonusTier}
+        rosterProfiles={rosterProfiles}
+        baseRosterProfiles={baseRosterProfiles}
+      />
+    ),
+    vestiaire: (
+      <VestiairePage
+        roster={effectifAvecBonusTier}
+        rosterProfiles={rosterProfiles}
+        baseRosterProfiles={baseRosterProfiles}
+        activeTeamName={activeTeamName}
       />
     ),
     'staff-finances': (
@@ -8531,12 +10424,24 @@ function App() {
         sponsorContracts={sponsorContracts}
         boardObjectives={boardObjectives}
         playerCount={baseRosterPlayers.length}
+        rosterSalaryTotal={baseRosterPlayers.reduce((sum, player) => {
+          const prof = rosterProfiles[player.playerId] ?? baseRosterProfiles[player.playerId]
+          return sum + (prof?.salary ?? DEFAULT_PLAYER_SALARY)
+        }, 0)}
+        facilities={facilities}
+        onUpgradeFacility={handleUpgradeFacility}
+        academyRoster={academyRoster}
+        onPromoteAcademy={handlePromoteAcademy}
+        bootcampActive={bootcampActive}
+        bootcampDaysLeft={bootcampDaysLeft}
+        onLaunchBootcamp={handleLaunchBootcamp}
       />
     ),
     'data-hub': (
       <DataHubPage
         lastMatchReport={lastMatchReport}
         staffTeam={staffTeam}
+        matchHistory={matchHistory}
       />
     ),
   }
