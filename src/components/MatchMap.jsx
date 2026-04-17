@@ -1,13 +1,12 @@
-import { useEffect, useState } from 'react'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 
 const MotionDiv = motion.div
 
 const ROLES = ['Top', 'Jungle', 'Mid', 'ADC', 'Support']
+const ROLE_INITIAL = { Top: 'T', Jungle: 'J', Mid: 'M', ADC: 'A', Support: 'S' }
 
-const CHAMPION_IMAGE_CDN_VERSION = '16.7.1'
-
-const CHAMPION_IMAGE_ID_OVERRIDES = {
+const CDN = '16.7.1'
+const DDR_OVERRIDES = {
   BelVeth: 'Belveth',
   ChoGath: 'Chogath',
   JarvanIV: 'JarvanIV',
@@ -23,403 +22,457 @@ const CHAMPION_IMAGE_ID_OVERRIDES = {
 
 function getChampionUrl(championId) {
   if (!championId) return null
-  const ddragonId = CHAMPION_IMAGE_ID_OVERRIDES[championId] ?? championId
-  return `https://ddragon.leagueoflegends.com/cdn/${CHAMPION_IMAGE_CDN_VERSION}/img/champion/${ddragonId}.png`
+  const id = DDR_OVERRIDES[championId] ?? championId
+  return `https://ddragon.leagueoflegends.com/cdn/${CDN}/img/champion/${id}.png`
 }
 
-const ROLE_INITIAL = {
-  Top: 'T',
-  Jungle: 'J',
-  Mid: 'M',
-  ADC: 'A',
-  Support: 'S',
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v))
 }
 
-const TEAM_LANE_POSITIONS = {
-  Top: { x: 18, y: 30 },
-  Jungle: { x: 31, y: 62 },
-  Mid: { x: 30, y: 70 },
-  ADC: { x: 56, y: 86 },
-  Support: { x: 48, y: 86 },
-}
-
-const ENEMY_LANE_POSITIONS = {
-  Top: { x: 66, y: 14 },
-  Jungle: { x: 69, y: 38 },
-  Mid: { x: 70, y: 30 },
-  ADC: { x: 86, y: 56 },
-  Support: { x: 86, y: 48 },
-}
-
-const LANE_CONTEST_POINTS = {
-  Top: { x: 42, y: 16 },
-  Mid: { x: 50, y: 50 },
-  ADC: { x: 78, y: 62 },
-  Support: { x: 74, y: 64 },
-}
-
-const ROLE_CLUSTER_OFFSETS = {
-  Top: { x: -8, y: -5 },
-  Jungle: { x: -3, y: -2 },
-  Mid: { x: 0, y: 0 },
-  ADC: { x: 5, y: 4 },
-  Support: { x: 2, y: 7 },
-}
-
-
-const BLUE_TOWERS = [
-  { id: 'bm1', x: 38, y: 58 },
-  { id: 'bt1', x: 18, y: 30 },
-  { id: 'bb1', x: 66, y: 86 },
-  { id: 'bm2', x: 30, y: 68 },
-  { id: 'bt2', x: 15, y: 48 },
-  { id: 'bb2', x: 50, y: 86 },
-  { id: 'bm3', x: 23, y: 76 },
-  { id: 'bt3', x: 13, y: 66 },
-  { id: 'bb3', x: 34, y: 86 },
-  { id: 'bn1', x: 17, y: 80 },
-  { id: 'bn2', x: 14, y: 84 },
-]
-
-const RED_TOWERS = [
-  { id: 'rm1', x: 62, y: 42 },
-  { id: 'rt1', x: 34, y: 14 },
-  { id: 'rb1', x: 86, y: 66 },
-  { id: 'rm2', x: 70, y: 32 },
-  { id: 'rt2', x: 48, y: 14 },
-  { id: 'rb2', x: 86, y: 50 },
-  { id: 'rm3', x: 77, y: 24 },
-  { id: 'rt3', x: 66, y: 14 },
-  { id: 'rb3', x: 86, y: 34 },
-  { id: 'rn1', x: 83, y: 20 },
-  { id: 'rn2', x: 86, y: 16 },
-]
-
-const OBJECTIVES = {
-  dragon: { x: 65, y: 64, label: 'DRG' },
-  nashor: { x: 36, y: 36, label: 'BSN' },
-  center: { x: 50, y: 50, label: 'MID' },
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value))
-}
-
-function stableHash(text) {
-  let hash = 0
-  for (let index = 0; index < text.length; index += 1) {
-    hash = (hash * 31 + text.charCodeAt(index)) >>> 0
-  }
-  return hash
-}
-
-function lerpPoint(from, to, alpha) {
+function lerp(from, to, alpha) {
   return {
     x: from.x + ((to.x - from.x) * alpha),
     y: from.y + ((to.y - from.y) * alpha),
   }
 }
 
-function getPhaseMode(event) {
-  if (!event) {
+function stableHash(text) {
+  let hash = 0
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (hash * 31 + text.charCodeAt(i)) >>> 0
+  }
+  return hash
+}
+
+function pointOnPolyline(points, t) {
+  if (!points?.length) return { x: 50, y: 50 }
+  if (points.length === 1) return points[0]
+
+  const alpha = clamp(t, 0, 1)
+  const scaled = alpha * (points.length - 1)
+  const index = Math.floor(scaled)
+  const local = scaled - index
+  const from = points[index]
+  const to = points[Math.min(index + 1, points.length - 1)]
+  return lerp(from, to, local)
+}
+
+const LANE_PATHS = {
+  top: [
+    { x: 12, y: 86 },
+    { x: 14, y: 70 },
+    { x: 15, y: 52 },
+    { x: 18, y: 32 },
+    { x: 34, y: 16 },
+    { x: 52, y: 14 },
+    { x: 70, y: 14 },
+    { x: 86, y: 12 },
+  ],
+  mid: [
+    { x: 22, y: 78 },
+    { x: 30, y: 68 },
+    { x: 38, y: 58 },
+    { x: 50, y: 50 },
+    { x: 62, y: 42 },
+    { x: 70, y: 32 },
+    { x: 78, y: 22 },
+  ],
+  bot: [
+    { x: 34, y: 86 },
+    { x: 50, y: 86 },
+    { x: 66, y: 86 },
+    { x: 82, y: 82 },
+    { x: 86, y: 66 },
+    { x: 86, y: 50 },
+    { x: 86, y: 34 },
+    { x: 88, y: 18 },
+  ],
+}
+
+const LANE_CLASH_POINTS = {
+  top: { x: 33, y: 17 },
+  mid: { x: 50, y: 50 },
+  bot: { x: 82, y: 67 },
+}
+
+const ROLE_LANE = {
+  Top: 'top',
+  Mid: 'mid',
+  ADC: 'bot',
+  Support: 'bot',
+}
+
+const ROLE_OFFSETS = {
+  Top: { x: -1.2, y: -1.8 },
+  Mid: { x: 0, y: 0 },
+  ADC: { x: 1.5, y: 1.4 },
+  Support: { x: -1.5, y: -1.2 },
+}
+
+const JUNGLE_PATROLS = {
+  team: [
+    { x: 34, y: 74 },
+    { x: 41, y: 82 },
+    { x: 53, y: 79 },
+    { x: 45, y: 69 },
+    { x: 36, y: 60 },
+    { x: 43, y: 53 },
+    { x: 52, y: 58 },
+  ],
+  enemy: [
+    { x: 66, y: 26 },
+    { x: 59, y: 18 },
+    { x: 47, y: 21 },
+    { x: 55, y: 31 },
+    { x: 64, y: 40 },
+    { x: 57, y: 47 },
+    { x: 48, y: 42 },
+  ],
+}
+
+const OBJECTIVES = {
+  dragon: { x: 65, y: 64 },
+  mid: { x: 50, y: 50 },
+  baron: { x: 36, y: 36 },
+}
+
+const TEAMFIGHT_OFFSETS = {
+  Top: { x: -8, y: -5 },
+  Jungle: { x: -3, y: -2 },
+  Mid: { x: 0, y: 0 },
+  ADC: { x: 5, y: 4 },
+  Support: { x: 2, y: 6 },
+}
+
+const BLUE_TOWERS = [
+  { id: 'bm1', x: 38, y: 58 }, { id: 'bt1', x: 18, y: 30 }, { id: 'bb1', x: 66, y: 86 },
+  { id: 'bm2', x: 30, y: 68 }, { id: 'bt2', x: 15, y: 48 }, { id: 'bb2', x: 50, y: 86 },
+  { id: 'bm3', x: 23, y: 76 }, { id: 'bt3', x: 13, y: 66 }, { id: 'bb3', x: 34, y: 86 },
+  { id: 'bn1', x: 17, y: 80 }, { id: 'bn2', x: 14, y: 84 },
+]
+
+const RED_TOWERS = [
+  { id: 'rm1', x: 62, y: 42 }, { id: 'rt1', x: 34, y: 14 }, { id: 'rb1', x: 86, y: 66 },
+  { id: 'rm2', x: 70, y: 32 }, { id: 'rt2', x: 48, y: 14 }, { id: 'rb2', x: 86, y: 50 },
+  { id: 'rm3', x: 77, y: 24 }, { id: 'rt3', x: 66, y: 14 }, { id: 'rb3', x: 86, y: 34 },
+  { id: 'rn1', x: 83, y: 20 }, { id: 'rn2', x: 86, y: 16 },
+]
+
+const OBJECTIVE_LABELS = {
+  dragon: { label: 'DRG', color: 'rgba(45,212,191,0.9)', glow: 'rgba(20,184,166,0.3)' },
+  baron: { label: 'BSN', color: 'rgba(192,132,252,0.9)', glow: 'rgba(168,85,247,0.3)' },
+  mid: { label: 'MID', color: 'rgba(251,191,36,0.9)', glow: 'rgba(245,158,11,0.25)' },
+}
+
+function objectiveKeyFromPosition(objective) {
+  if (!objective) return 'dragon'
+  if (Math.abs(objective.x - 36) < 0.8 && Math.abs(objective.y - 36) < 0.8) return 'baron'
+  if (Math.abs(objective.x - 50) < 0.8 && Math.abs(objective.y - 50) < 0.8) return 'mid'
+  return 'dragon'
+}
+
+function deriveKillEvent(evt) {
+  if (!evt || Math.abs(evt.deltaGold ?? 0) < 350) return null
+  const winnerSide = (evt.deltaGold ?? 0) >= 0 ? 'team' : 'enemy'
+  const killerRole = ROLES[stableHash(`${evt.minute}-killer`) % ROLES.length]
+  let victimRole = ROLES[stableHash(`${evt.minute}-victim`) % ROLES.length]
+  if (victimRole === killerRole) victimRole = ROLES[(ROLES.indexOf(victimRole) + 1) % ROLES.length]
+  return { winnerSide, loserSide: winnerSide === 'team' ? 'enemy' : 'team', killerRole, victimRole }
+}
+
+function getObjectiveForMinute(minute) {
+  if (minute <= 14) return OBJECTIVES.dragon
+  if (minute <= 25) return OBJECTIVES.mid
+  return OBJECTIVES.baron
+}
+
+function getModeFromEvent(event, minute, aggressivite = 50) {
+  if (event?.phaseId === 'early') {
+    return Math.abs(event?.deltaGold ?? 0) > 1200 ? 'gank' : 'lane'
+  }
+
+  if (event?.phaseId === 'late') {
+    return 'teamfight'
+  }
+
+  const swing = Math.abs(event?.deltaGold ?? 0)
+  if (swing >= 1500 || aggressivite >= 72) {
+    return 'teamfight'
+  }
+
+  if (swing >= 850) {
+    return 'gank'
+  }
+
+  if (minute <= 12) {
     return 'lane'
   }
 
-  if (event.phaseId === 'early') {
-    return event.minute % 6 === 0 ? 'gank' : 'lane'
+  return 'gank'
+}
+
+function pickGankLane(minute, matchId) {
+  const lanes = ['top', 'mid', 'bot']
+  return lanes[stableHash(`${matchId}-${minute}-gank`) % lanes.length]
+}
+
+function buildLanePosition({ side, role, laneName, minute, mode, matchId, targetLane }) {
+  const path = LANE_PATHS[laneName] ?? LANE_PATHS.mid
+  const progress = clamp(0.18 + (minute * 0.019), 0.18, 0.58)
+  const sideProgress = side === 'team' ? progress : 1 - progress
+
+  let point = pointOnPolyline(path, sideProgress)
+
+  if (mode === 'gank' && targetLane === laneName) {
+    const clashPoint = LANE_CLASH_POINTS[laneName] ?? LANE_CLASH_POINTS.mid
+    point = lerp(point, clashPoint, role === 'Support' ? 0.46 : 0.55)
   }
 
-  if (event.phaseId === 'mid') {
-    if (event.minute % 4 === 0) {
-      return 'teamfight'
+  if (mode === 'gank' && role === 'Support' && minute >= 8 && laneName === 'bot' && targetLane !== 'bot') {
+    const supportRoamTarget = targetLane === 'top' ? { x: 36, y: 34 } : { x: 47, y: 52 }
+    point = lerp(point, supportRoamTarget, 0.52)
+  }
+
+  const offset = ROLE_OFFSETS[role] ?? { x: 0, y: 0 }
+  point = {
+    x: point.x + (side === 'team' ? offset.x : -offset.x),
+    y: point.y + (side === 'team' ? offset.y : -offset.y),
+  }
+
+  const jitter = mode === 'lane' ? 0.45 : 0.65
+  point = {
+    x: point.x + (((stableHash(`${matchId}-${side}-${role}-${minute}-jx`) % 5) - 2) * jitter),
+    y: point.y + (((stableHash(`${matchId}-${side}-${role}-${minute}-jy`) % 5) - 2) * jitter),
+  }
+
+  return point
+}
+
+function buildJunglePosition({ side, minute, mode, targetLane, objective, matchId }) {
+  const patrol = JUNGLE_PATROLS[side]
+  const cycle = ((minute * 0.62) + ((stableHash(`${matchId}-${side}-cycle`) % 100) / 100)) % patrol.length
+  const cycleIndex = Math.floor(cycle)
+  const nextIndex = (cycleIndex + 1) % patrol.length
+  const local = cycle - cycleIndex
+  const patrolPoint = lerp(patrol[cycleIndex], patrol[nextIndex], local)
+
+  if (mode === 'teamfight') {
+    const tfOffset = side === 'team' ? { x: -3.2, y: -2.5 } : { x: 3.2, y: 2.5 }
+    return {
+      x: objective.x + tfOffset.x,
+      y: objective.y + tfOffset.y,
     }
-
-    return event.minute % 3 === 0 ? 'gank' : 'lane'
   }
 
-  return 'teamfight'
+  if (mode === 'gank') {
+    const clash = LANE_CLASH_POINTS[targetLane] ?? LANE_CLASH_POINTS.mid
+    const sideAnchor = side === 'team'
+      ? { x: clash.x - 5.5, y: clash.y + 4.5 }
+      : { x: clash.x + 5.5, y: clash.y - 4.5 }
+    return lerp(patrolPoint, sideAnchor, 0.78)
+  }
+
+  return patrolPoint
 }
 
-function getObjectiveByMinute(minute) {
-  if (minute <= 20) {
-    return OBJECTIVES.dragon
-  }
-  if (minute <= 26) {
-    return OBJECTIVES.center
-  }
-  return OBJECTIVES.nashor
-}
-
-function getRoleForAction(minute, seedSuffix, fallbackRole) {
-  if (fallbackRole === 'Mid' || fallbackRole === 'Top' || fallbackRole === 'ADC' || fallbackRole === 'Support') {
-    return fallbackRole
-  }
-
-  const gankRoles = ['Top', 'Mid', 'ADC']
-  return gankRoles[stableHash(`${minute}-${seedSuffix}`) % gankRoles.length]
-}
-
-function deriveKillEvent(currentEvent) {
-  if (!currentEvent || Math.abs(currentEvent.deltaGold ?? 0) < 350) {
-    return null
-  }
-
-  const winnerSide = (currentEvent.deltaGold ?? 0) >= 0 ? 'team' : 'enemy'
-  const loserSide = winnerSide === 'team' ? 'enemy' : 'team'
-
-  const killerRole = ROLES[stableHash(`${currentEvent.minute}-killer`) % ROLES.length]
-  let victimRole = ROLES[stableHash(`${currentEvent.minute}-victim`) % ROLES.length]
-
-  if (victimRole === killerRole) {
-    victimRole = ROLES[(ROLES.indexOf(victimRole) + 1) % ROLES.length]
-  }
-
-  return {
-    winnerSide,
-    loserSide,
-    killerRole,
-    victimRole,
-  }
-}
-
-function getUnitBasePosition(side, role) {
-  return side === 'team' ? TEAM_LANE_POSITIONS[role] : ENEMY_LANE_POSITIONS[role]
-}
-
-function buildUnitPositions({ mode, minute, focusRole, killEvent }) {
-  const objective = getObjectiveByMinute(minute)
-  const teamGankRole = getRoleForAction(minute, 'team-gank', focusRole)
-  const enemyGankRole = getRoleForAction(minute, 'enemy-gank', null)
-
+function buildAllPositions({ mode, minute, objective, matchId, killEvent }) {
   const positions = {}
+  const seed = matchId ?? 'live-match'
+  const targetLane = pickGankLane(minute, seed)
 
-  ;['team', 'enemy'].forEach((side) => {
-    ROLES.forEach((role) => {
-      const unitId = `${side}-${role}`
-      const lanePoint = getUnitBasePosition(side, role)
-      let point = { ...lanePoint }
+  for (const side of ['team', 'enemy']) {
+    for (const role of ROLES) {
+      let point
 
-      if (mode === 'lane') {
-        if (role !== 'Jungle') {
-          const contestPoint = LANE_CONTEST_POINTS[role] ?? lanePoint
-          const laneAlpha = clamp((minute - 2) / 16, 0, 0.45)
-          point = lerpPoint(lanePoint, contestPoint, laneAlpha)
-        }
-
-        const jitterX = ((stableHash(`${unitId}-${minute}-jx`) % 5) - 2) * 0.45
-        const jitterY = ((stableHash(`${unitId}-${minute}-jy`) % 5) - 2) * 0.45
+      if (role === 'Jungle') {
+        point = buildJunglePosition({
+          side,
+          minute,
+          mode,
+          targetLane,
+          objective,
+          matchId: seed,
+        })
+      } else if (mode === 'teamfight') {
+        const offset = TEAMFIGHT_OFFSETS[role] ?? { x: 0, y: 0 }
+        const dir = side === 'team' ? 1 : -1
         point = {
-          x: point.x + jitterX,
-          y: point.y + jitterY,
+          x: objective.x + (offset.x * dir),
+          y: objective.y + (offset.y * dir),
+        }
+      } else {
+        const laneName = ROLE_LANE[role] ?? 'mid'
+        point = buildLanePosition({
+          side,
+          role,
+          laneName,
+          minute,
+          mode,
+          matchId: seed,
+          targetLane,
+        })
+      }
+
+      let finalPoint = {
+        x: point.x,
+        y: point.y,
+      }
+
+      if (killEvent?.killerRole === role && killEvent?.winnerSide === side) {
+        const dir = side === 'team' ? 1 : -1
+        finalPoint = {
+          x: finalPoint.x + (4.5 * dir),
+          y: finalPoint.y - (4 * dir),
         }
       }
 
-      if (mode === 'gank' && role === 'Jungle') {
-        const targetRole = side === 'team' ? teamGankRole : enemyGankRole
-        const targetPoint = side === 'team' ? ENEMY_LANE_POSITIONS[targetRole] : TEAM_LANE_POSITIONS[targetRole]
-        point = lerpPoint(lanePoint, targetPoint, 0.58)
+      positions[`${side}-${role}`] = {
+        x: clamp(finalPoint.x, 6, 94),
+        y: clamp(finalPoint.y, 6, 94),
       }
-
-      if (mode === 'teamfight') {
-        const offset = ROLE_CLUSTER_OFFSETS[role] ?? { x: 0, y: 0 }
-        const sideDirection = side === 'team' ? 1 : -1
-        point = {
-          x: objective.x + (offset.x * sideDirection),
-          y: objective.y + (offset.y * sideDirection),
-        }
-      }
-
-      if (killEvent && killEvent.killerRole === role && killEvent.winnerSide === side) {
-        const pushX = side === 'team' ? 9 : -9
-        const pushY = side === 'team' ? -9 : 9
-        point = {
-          x: point.x + pushX,
-          y: point.y + pushY,
-        }
-      }
-
-      positions[unitId] = {
-        x: clamp(point.x, 4, 96),
-        y: clamp(point.y, 4, 96),
-      }
-    })
-  })
-
-  return {
-    positions,
-    objective,
+    }
   }
+
+  return positions
 }
 
-export default function MatchMap({ liveSession, currentIndex, focusRole }) {
-  const [deadRecords, setDeadRecords] = useState({})
-
+export default function MatchMap({ liveSession, currentIndex, aggressivite = 50 }) {
   const currentEvent = liveSession?.timeline?.[currentIndex] ?? null
-  const mode = getPhaseMode(currentEvent)
   const killEvent = deriveKillEvent(currentEvent)
-  const killLoserSide = killEvent?.loserSide ?? null
-  const killVictimRole = killEvent?.victimRole ?? null
+  const minute = currentEvent?.minute ?? 0
+  const goldDiff = currentEvent?.goldDiff ?? 0
 
-  useEffect(() => {
-    if (!killLoserSide || !killVictimRole) {
-      return undefined
-    }
+  const matchId = liveSession?.matchId ?? 'live'
+  const mode = getModeFromEvent(currentEvent, minute, aggressivite)
+  const objective = getObjectiveForMinute(minute)
+  const positions = buildAllPositions({ mode, minute, objective, matchId, killEvent })
 
-    const victimId = `${killLoserSide}-${killVictimRole}`
-    const minute = currentEvent?.minute ?? 0
+  const deadUnitId = killEvent ? `${killEvent.loserSide}-${killEvent.victimRole}` : null
+  const teamTowers = currentEvent?.scoreboard?.team?.towers ?? 0
+  const enemyTowers = currentEvent?.scoreboard?.enemy?.towers ?? 0
 
-    setDeadRecords((prev) => ({
-      ...prev,
-      [victimId]: minute,
-    }))
-  }, [killLoserSide, killVictimRole, currentEvent?.minute])
+  const objectiveKey = objectiveKeyFromPosition(objective)
+  const obj = { ...objective, ...(OBJECTIVE_LABELS[objectiveKey] ?? OBJECTIVE_LABELS.dragon) }
 
-  const teamTowersDestroyed = currentEvent?.scoreboard?.team?.towers ?? 0
-  const enemyTowersDestroyed = currentEvent?.scoreboard?.enemy?.towers ?? 0
-
-  const mapState = buildUnitPositions({
-    mode,
-    minute: currentEvent?.minute ?? 0,
-    focusRole,
-    killEvent,
-  })
+  const phaseLabel = mode === 'teamfight' ? '⚔ TEAMFIGHT' : mode === 'gank' ? '↯ GANK' : '— LANING'
+  const phaseColor = mode === 'teamfight'
+    ? 'text-red-300 border-red-700/60 bg-red-950/50'
+    : mode === 'gank'
+      ? 'text-yellow-300 border-yellow-700/60 bg-yellow-950/50'
+      : 'text-slate-300 border-slate-700/40 bg-slate-900/50'
 
   return (
-    <div className="relative aspect-square w-full overflow-hidden rounded border border-[color:rgba(203,213,225,0.28)] bg-[#0a0f18]">
+    <div className="relative aspect-square w-full overflow-hidden rounded-sm border border-[rgba(203,213,225,0.2)] bg-[#08111c]">
       <img
-        src={`https://ddragon.leagueoflegends.com/cdn/${CHAMPION_IMAGE_CDN_VERSION}/img/map/map11.png`}
-        className="absolute inset-0 h-full w-full object-cover opacity-[0.85] mix-blend-lighten"
+        src={`https://ddragon.leagueoflegends.com/cdn/${CDN}/img/map/map11.png`}
+        className="absolute inset-0 h-full w-full object-contain opacity-[0.96]"
         alt="Summoners Rift"
+        draggable={false}
       />
+
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-black/16 via-transparent to-black/26" />
+
       <svg viewBox="0 0 100 100" className="absolute inset-0 h-full w-full pointer-events-none">
-        {/* Lignes principales */}
-        <path d="M 13 66 L 15 48 L 18 30 L 34 14 L 48 14 L 66 14" fill="none" stroke="rgba(226,232,240,0.12)" strokeWidth="1.6" />
-        <path d="M 23 76 L 30 68 L 38 58 L 50 50 L 62 42 L 70 32 L 77 24" fill="none" stroke="rgba(226,232,240,0.15)" strokeWidth="2.1" />
-        <path d="M 34 86 L 50 86 L 66 86 L 86 66 L 86 50 L 86 34" fill="none" stroke="rgba(226,232,240,0.12)" strokeWidth="1.6" />
-
-        <circle cx={OBJECTIVES.dragon.x} cy={OBJECTIVES.dragon.y} r="4.5" fill="rgba(20,184,166,0.15)" stroke="rgba(45,212,191,0.4)" strokeWidth="0.8" />
-        <circle cx={OBJECTIVES.nashor.x} cy={OBJECTIVES.nashor.y} r="4.5" fill="rgba(168,85,247,0.15)" stroke="rgba(192,132,252,0.4)" strokeWidth="0.8" />
-
-        <rect x="3" y="82" width="14" height="14" rx="2" fill="rgba(59,130,246,0.2)" stroke="rgba(96,165,250,0.7)" strokeWidth="1" />
-        <rect x="83" y="4" width="14" height="14" rx="2" fill="rgba(239,68,68,0.2)" stroke="rgba(248,113,113,0.7)" strokeWidth="1" />
-
-        {/* Tours Bleues (detruites par l'equipe Red "enemyTowersDestroyed") */}
+        {/* Draw subtle grid lines or lanes */}
+        
+        {/* Highlight objective circles */}
+        <circle cx={obj.x} cy={obj.y} r="8" fill={obj.glow} stroke={obj.color} strokeWidth="0.4" opacity="0.6" />
+        
+        {/* Towers as glowing pillars */}
         {BLUE_TOWERS.map((t, i) => {
-          const isDestroyed = i < enemyTowersDestroyed
+          const dead = i < enemyTowers;
           return (
-            <circle
-              key={t.id}
-              cx={t.x}
-              cy={t.y}
-              r="1.8"
-              fill={isDestroyed ? "rgba(71,85,105,0.4)" : "rgba(59,130,246,0.9)"}
-              stroke={isDestroyed ? "rgba(100,116,139,0.5)" : "rgba(147,197,253,1)"}
-              strokeWidth="0.6"
-              className="transition-all duration-1000"
-            />
+            <g key={t.id} className="transition-all duration-700">
+              <ellipse cx={t.x} cy={t.y+1} rx="2.5" ry="1.5" fill="rgba(0,0,0,0.5)" />
+              <rect x={t.x-1.5} y={t.y-3} width="3" height="4" fill={dead ? '#334155' : '#1e3a8a'} stroke={dead ? '#475569' : '#3b82f6'} strokeWidth="0.3" />
+              <circle cx={t.x} cy={t.y-3} r="1.5" fill={dead ? '#475569' : '#60a5fa'} />
+            </g>
           )
         })}
-
-        {/* Tours Rouges (detruites par l'equipe Blue "teamTowersDestroyed") */}
+        
         {RED_TOWERS.map((t, i) => {
-          const isDestroyed = i < teamTowersDestroyed
+          const dead = i < teamTowers;
           return (
-            <circle
-              key={t.id}
-              cx={t.x}
-              cy={t.y}
-              r="1.8"
-              fill={isDestroyed ? "rgba(71,85,105,0.4)" : "rgba(239,68,68,0.9)"}
-              stroke={isDestroyed ? "rgba(100,116,139,0.5)" : "rgba(252,165,165,1)"}
-              strokeWidth="0.6"
-              className="transition-all duration-1000"
-            />
+            <g key={t.id} className="transition-all duration-700">
+              <ellipse cx={t.x} cy={t.y+1} rx="2.5" ry="1.5" fill="rgba(0,0,0,0.5)" />
+              <rect x={t.x-1.5} y={t.y-3} width="3" height="4" fill={dead ? '#450a0a' : '#7f1d1d'} stroke={dead ? '#7f1d1d' : '#ef4444'} strokeWidth="0.3" />
+              <circle cx={t.x} cy={t.y-3} r="1.5" fill={dead ? '#7f1d1d' : '#f87171'} />
+            </g>
           )
         })}
       </svg>
 
-      <div
-        className="absolute z-10 rounded border border-cyan-300/60 bg-cyan-400/20 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-cyan-100 backdrop-blur-sm"
-        style={{
-          left: `${mapState.objective.x}%`,
-          top: `${mapState.objective.y}%`,
-          transform: 'translate(-50%, -50%)',
-        }}
-      >
-        {mapState.objective.label}
-      </div>
-
-      {['team', 'enemy'].flatMap((side) => (
+      {['team', 'enemy'].flatMap((side) =>
         ROLES.map((role) => {
           const unitId = `${side}-${role}`
-          const position = mapState.positions[unitId]
-          const isRespawning = deadRecords[unitId] === (currentEvent?.minute ?? -1)
-
-          if (!position || isRespawning) {
-            return null
-          }
+          const pos = positions[unitId]
+          const isDead = deadUnitId === unitId
+          const isKillerUnit = killEvent !== null && killEvent.killerRole === role && killEvent.winnerSide === side
+          if (!pos || isDead) return null
 
           const isBlue = side === 'team'
           const championKey = isBlue
             ? liveSession?.draftState?.playerPicks?.[role]
             : liveSession?.draftState?.enemyPicks?.[role]
-          
-          let content = ROLE_INITIAL[role]
-          let hasImage = false
+          const championId = championKey?.split('-')[0] ?? null
+          const imgUrl = getChampionUrl(championId)
 
-          if (championKey) {
-            // Extrait l'id du champion du format "Aatrox-Top"
-            const championId = championKey.split('-')[0]
-            const imgUrl = getChampionUrl(championId)
-            if (imgUrl) {
-              hasImage = true
-              content = (
-                <img
-                  src={imgUrl}
-                  alt={championId}
-                  className="h-full w-full rounded-full object-cover"
-                  onError={(e) => {
-                    e.currentTarget.style.display = 'none'
-                    e.currentTarget.nextSibling.style.display = 'flex'
-                  }}
-                />
-              )
-            }
-          }
-
-          const colorClass = isBlue
-            ? 'border-blue-400 bg-blue-900 shadow-[0_0_12px_rgba(59,130,246,0.7)]'
-            : 'border-red-400 bg-red-900 shadow-[0_0_12px_rgba(239,68,68,0.7)]'
+          const ringClass = isBlue
+            ? 'border-blue-400 shadow-[0_0_10px_rgba(59,130,246,0.85),0_0_20px_rgba(59,130,246,0.4)]'
+            : 'border-red-400 shadow-[0_0_10px_rgba(239,68,68,0.85),0_0_20px_rgba(239,68,68,0.4)]'
+          const bgClass = isBlue ? 'bg-blue-900' : 'bg-red-900'
 
           return (
             <MotionDiv
               key={unitId}
-              className={`absolute z-20 flex h-8 w-8 items-center justify-center rounded-full border-[1.5px] text-[10px] font-bold uppercase text-white overflow-hidden ${colorClass}`}
-              animate={{
-                left: `${position.x}%`,
-                top: `${position.y}%`,
-                scale: mode === 'lane' ? [1, 1.08, 1] : 1,
-              }}
-              transition={{
-                left: { type: 'spring', stiffness: 140, damping: 18 },
-                top: { type: 'spring', stiffness: 140, damping: 18 },
-                scale: { duration: 0.8, repeat: mode === 'lane' ? Infinity : 0, ease: 'easeInOut' },
-              }}
+              className={`absolute z-20 flex h-9 w-9 items-center justify-center overflow-hidden rounded-full border-2 text-[9px] font-bold uppercase text-white ${ringClass} ${bgClass}`}
+              animate={{ left: `${pos.x}%`, top: `${pos.y}%` }}
+              transition={{ left: { type: 'tween', duration: 1.15, ease: 'easeOut' }, top: { type: 'tween', duration: 1.15, ease: 'easeOut' } }}
               style={{ transform: 'translate(-50%, -50%)' }}
             >
-              {content}
-              {hasImage && (
-                <span className="absolute inset-0 hidden items-center justify-center bg-inherit">
-                  {ROLE_INITIAL[role]}
-                </span>
+              {imgUrl ? (
+                <img src={imgUrl} alt={championId ?? role} className="h-full w-full scale-110 rounded-full object-cover" draggable={false} />
+              ) : (
+                <span>{ROLE_INITIAL[role]}</span>
               )}
+
+              <AnimatePresence>
+                {isKillerUnit && (
+                  <motion.div
+                    key={`flash-${killEvent?.victimRole}-${killEvent?.loserSide}`}
+                    className="pointer-events-none absolute inset-0 rounded-full border-4 border-yellow-300"
+                    initial={{ opacity: 1, scale: 1 }}
+                    animate={{ opacity: 0, scale: 2.8 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.9, ease: 'easeOut' }}
+                  />
+                )}
+              </AnimatePresence>
             </MotionDiv>
           )
-        })
-      ))}
+        }),
+      )}
 
-      <div className="pointer-events-none absolute left-2 top-2 rounded border border-slate-200/20 bg-slate-900/55 px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-slate-300">
-        {mode === 'lane' ? 'Lane Phase' : mode === 'gank' ? 'Gank Phase' : 'Teamfight'}
+      <div className="pointer-events-none absolute bottom-0 left-0 right-0 flex items-center justify-center pb-1">
+        <div className="flex items-center gap-2 rounded border border-slate-700/40 bg-black/60 px-3 py-0.5 text-[9px] backdrop-blur-sm">
+          <span className="font-bold text-blue-400">{goldDiff >= 0 ? `+${(goldDiff / 1000).toFixed(1)}K` : ''}</span>
+          <div className="h-1 w-24 overflow-hidden rounded bg-slate-700">
+            <div
+              className={`h-1 rounded transition-all duration-700 ${goldDiff >= 0 ? 'bg-blue-500' : 'bg-red-500'}`}
+              style={{ width: `${clamp(50 + (goldDiff / 8000) * 50, 5, 95)}%`, marginLeft: goldDiff >= 0 ? 0 : 'auto' }}
+            />
+          </div>
+          <span className="font-bold text-red-400">{goldDiff < 0 ? `+${(Math.abs(goldDiff) / 1000).toFixed(1)}K` : ''}</span>
+        </div>
+      </div>
+
+      <div className={`pointer-events-none absolute left-2 top-2 rounded border px-2 py-0.5 text-[9px] font-bold tracking-[0.1em] backdrop-blur-sm ${phaseColor}`}>
+        {phaseLabel}
+      </div>
+
+      <div className="pointer-events-none absolute right-2 top-2 rounded border border-slate-700/50 bg-black/60 px-2 py-0.5 text-[10px] font-mono font-bold text-white backdrop-blur-sm">
+        {String(minute).padStart(2, '0')}:00
       </div>
     </div>
   )

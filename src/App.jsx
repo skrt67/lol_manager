@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   BarChart2,
   Calendar,
   DollarSign,
   Dumbbell,
   FileSearch,
+  Inbox,
   LayoutDashboard,
   Search,
   Swords,
@@ -21,11 +22,18 @@ import { CHAMPIONS_DB, NO_LUCK_COMBOS } from './data'
 import { LEC_PLAYERS, LFL_PLAYERS } from './data/proPlayers'
 import TrainingView from './components/TrainingView'
 import MatchMap from './components/MatchMap'
+import { clearGameState, loadGameState, saveGameState } from './utils/saveGame'
+import { assignTraitsToPlayer, getTrait, getTraitStatBonuses } from './utils/playerTraits'
+import { rollWeeklyEventsForRoster, getWeekIndex } from './utils/gameEvents'
+import { rollWeeklyDecision } from './utils/decisionEvents'
+
+const _initialSave = loadGameState()
 
 const navGroups = [
   {
     title: 'Preparer',
     items: [
+      { id: 'mailbox', label: 'Boite mail', icon: Inbox },
       { id: 'dashboard', label: 'Tableau de bord', icon: LayoutDashboard },
       { id: 'tactiques', label: 'Tactiques', icon: Swords },
       { id: 'rapport-analyste', label: 'Rapport Analyste', icon: FileSearch },
@@ -648,10 +656,19 @@ function buildDraftRoleReport(draftState, draftScoreCard, draftPunishmentProfile
 }
 
 function toDateKey(date) {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
+  // Defensive coercion: legacy saves may store the date as an ISO string
+  const d = date instanceof Date ? date : new Date(date)
+  if (Number.isNaN(d.getTime())) return '1970-01-01'
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+function getDateTimestamp(value, fallback = 0) {
+  const d = value instanceof Date ? value : new Date(value)
+  const time = d.getTime()
+  return Number.isNaN(time) ? fallback : time
 }
 
 function addDays(date, amount) {
@@ -661,16 +678,20 @@ function addDays(date, amount) {
 }
 
 function formatDateLong(date) {
+  const d = date instanceof Date ? date : new Date(date)
+  if (Number.isNaN(d.getTime())) return '-'
   return new Intl.DateTimeFormat('fr-FR', {
     day: '2-digit',
     month: 'short',
     year: 'numeric',
-  }).format(date)
+  }).format(d)
 }
 
 function getWeekDayLabel(date) {
+  const d = date instanceof Date ? date : new Date(date)
+  if (Number.isNaN(d.getTime())) return '-'
   const labels = ['Dimanche', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi']
-  return labels[date.getDay()]
+  return labels[d.getDay()]
 }
 
 function increaseMorale(value) {
@@ -1012,10 +1033,10 @@ function getLecStageContext(schedule, currentDate) {
   const todayMatch = safeSchedule.find((match) => match.status === 'upcoming' && match.dateKey === todayKey)
   const nextUpcoming = [...safeSchedule]
     .filter((match) => match.status === 'upcoming')
-    .sort((a, b) => a.date.getTime() - b.date.getTime())[0]
+    .sort((a, b) => getDateTimestamp(a.date, Number.MAX_SAFE_INTEGER) - getDateTimestamp(b.date, Number.MAX_SAFE_INTEGER))[0]
   const lastPlayed = [...safeSchedule]
     .filter((match) => match.status === 'played')
-    .sort((a, b) => b.date.getTime() - a.date.getTime())[0]
+    .sort((a, b) => getDateTimestamp(b.date, -1) - getDateTimestamp(a.date, -1))[0]
 
   const activeStage = todayMatch?.stage ?? nextUpcoming?.stage ?? lastPlayed?.stage ?? 'LEC Versus'
 
@@ -1205,9 +1226,17 @@ function computeSeasonProgress(schedule, currentDate) {
     return 0
   }
 
-  const start = schedule[0].date.getTime()
-  const end = schedule[schedule.length - 1].date.getTime()
-  const now = currentDate.getTime()
+  const scheduleTimestamps = schedule
+    .map((match) => getDateTimestamp(match?.date, Number.NaN))
+    .filter((time) => !Number.isNaN(time))
+
+  if (!scheduleTimestamps.length) {
+    return 0
+  }
+
+  const start = Math.min(...scheduleTimestamps)
+  const end = Math.max(...scheduleTimestamps)
+  const now = getDateTimestamp(currentDate, start)
   if (end <= start) {
     return 0
   }
@@ -1455,6 +1484,7 @@ function buildInitialRosterProfiles(players) {
       currentAbility: clamp((player.laning + player.teamfight + player.macro + player.mechanics) / 4, 40, 99),
       matchHistory: seed.matchHistory ?? ['V', 'D', 'V', 'V'],
       championMastery: buildInitialMasteryMap(profileKey, player.role, player.signatureChampions ?? []),
+      traits: assignTraitsToPlayer(profileKey, { age: actualAge, role: player.role }),
     }
 
     return acc
@@ -2973,7 +3003,239 @@ function Panel({ title, subtitle, children }) {
   )
 }
 
-function DashboardPage({ effectif, onOpenPlayerProfile, onOpenSoloQLadder, soloQPreview, matchDayInsights }) {
+function DecisionEventModal({ decision, onResolve }) {
+  if (!decision) return null
+
+  const formatEffect = (fx = {}) => {
+    const bits = []
+    if (fx.budgetDelta) bits.push(`${fx.budgetDelta > 0 ? '+' : ''}${(fx.budgetDelta / 1000).toFixed(0)}k€`)
+    if (fx.moralDelta)  bits.push(`${fx.moralDelta > 0 ? '+' : ''}${fx.moralDelta} moral`)
+    if (fx.conditionDelta) bits.push(`${fx.conditionDelta > 0 ? '+' : ''}${fx.conditionDelta} forme`)
+    if (fx.reputationDelta) bits.push(`${fx.reputationDelta > 0 ? '+' : ''}${fx.reputationDelta} image`)
+    if (fx.ladderLpDelta) bits.push(`${fx.ladderLpDelta > 0 ? '+' : ''}${fx.ladderLpDelta} LP`)
+    if (fx.stats?.mechanics) bits.push(`+${fx.stats.mechanics} méca`)
+    if (fx.stats?.teamfight) bits.push(`+${fx.stats.teamfight} TF`)
+    if (fx.stats?.macro) bits.push(`+${fx.stats.macro} macro`)
+    return bits.join(' · ')
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-2xl rounded-lg border border-[var(--border-strong)] bg-[var(--surface-1)] shadow-2xl">
+        <header className="flex items-center gap-3 border-b border-[var(--border-soft)] px-5 py-4">
+          <span className="text-3xl leading-none">{decision.icon}</span>
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Décision manageriale requise</p>
+            <h2 className="font-heading text-lg uppercase tracking-[0.04em] text-[var(--text-main)]">{decision.headline}</h2>
+          </div>
+        </header>
+
+        <div className="px-5 py-4">
+          <p className="text-sm text-[var(--text-soft)]">{decision.prompt}</p>
+        </div>
+
+        <div className="grid gap-2 border-t border-[var(--border-soft)] p-4">
+          {decision.choices.map((choice) => {
+            const effectLine = formatEffect(choice.effects)
+            return (
+              <button
+                key={choice.id}
+                type="button"
+                onClick={() => onResolve(choice.id)}
+                className="group rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-4 py-3 text-left transition hover:border-[var(--accent)] hover:bg-[var(--surface-3)]"
+              >
+                <div className="flex items-baseline justify-between gap-3">
+                  <p className="font-heading text-sm uppercase tracking-wide text-[var(--text-main)] group-hover:text-[var(--accent)]">
+                    {choice.label}
+                  </p>
+                  {effectLine ? (
+                    <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">{effectLine}</span>
+                  ) : null}
+                </div>
+                <p className="mt-1 text-xs text-[var(--text-soft)]">{choice.description}</p>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function NewsFeedPanel({ newsFeed = [] }) {
+  if (!newsFeed.length) {
+    return (
+      <Panel title="Actualités" subtitle="News de l'équipe">
+        <p className="text-sm text-[var(--text-soft)]">Aucune news. Avance le temps pour voir ton équipe vivre.</p>
+      </Panel>
+    )
+  }
+
+  return (
+    <Panel title="Actualités" subtitle={`${newsFeed.length} événement${newsFeed.length > 1 ? 's' : ''} récents`}>
+      <ul className="space-y-2">
+        {newsFeed.slice(0, 8).map((evt) => {
+          const borderColor = evt.category === 'positive'
+            ? 'border-l-green-500'
+            : evt.category === 'negative'
+              ? 'border-l-red-500'
+              : 'border-l-slate-500'
+          return (
+            <li key={evt.id} className={`rounded border border-[var(--border-soft)] border-l-[3px] ${borderColor} bg-[var(--surface-2)] px-3 py-2`}>
+              <div className="flex items-start gap-2">
+                <span className="text-xl leading-none">{evt.icon}</span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-[var(--text-main)]">{evt.headline}</p>
+                  <p className="mt-1 text-xs text-[var(--text-soft)]">{evt.body}</p>
+                  <p className="mt-1 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Semaine {evt.weekIndex + 1}</p>
+                </div>
+              </div>
+            </li>
+          )
+        })}
+      </ul>
+    </Panel>
+  )
+}
+
+function MailboxPage({ mails, selectedMailId, onSelectMail, onMarkAllRead, onOpenPage }) {
+  const [filter, setFilter] = useState('all')
+
+  const filteredMails = useMemo(() => {
+    if (filter === 'unread') return mails.filter((mail) => mail.unread)
+    if (filter === 'priority') return mails.filter((mail) => mail.priority === 'urgent' || mail.priority === 'high')
+    return mails
+  }, [mails, filter])
+
+  const selectedMail = mails.find((mail) => mail.id === selectedMailId) ?? filteredMails[0] ?? null
+  const unreadCount = mails.filter((mail) => mail.unread).length
+  const hasUnread = unreadCount > 0
+
+  const priorityStyles = {
+    urgent: 'border-red-500/60 bg-red-500/15 text-red-200',
+    high: 'border-amber-400/60 bg-amber-500/15 text-amber-200',
+    normal: 'border-[var(--border-soft)] bg-[var(--surface-2)] text-[var(--text-soft)]',
+  }
+  const priorityLabels = {
+    urgent: 'Urgent',
+    high: 'Important',
+    normal: 'Info',
+  }
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
+      <Panel title="Boite mail" subtitle={`${unreadCount} message${unreadCount > 1 ? 's' : ''} non lu${unreadCount > 1 ? 's' : ''}`}>
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          {[
+            { id: 'all', label: 'Tout' },
+            { id: 'unread', label: 'Non lus' },
+            { id: 'priority', label: 'Priorite' },
+          ].map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() => setFilter(option.id)}
+              className={`rounded border px-2 py-1 text-xs uppercase tracking-[0.08em] transition ${
+                filter === option.id
+                  ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]'
+                  : 'border-[var(--border-soft)] bg-[var(--surface-2)] text-[var(--text-soft)] hover:border-[var(--accent)]'
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={onMarkAllRead}
+            disabled={!hasUnread}
+            className="ml-auto rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-2 py-1 text-xs uppercase tracking-[0.08em] text-[var(--text-soft)] transition hover:border-[var(--accent)] hover:text-[var(--text-main)] disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            Tout lire
+          </button>
+        </div>
+
+        {!filteredMails.length ? (
+          <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--text-soft)]">
+            Aucun message pour ce filtre.
+          </p>
+        ) : (
+          <div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">
+            {filteredMails.map((mail) => {
+              const isSelected = selectedMail?.id === mail.id
+              const priorityClass = priorityStyles[mail.priority] ?? priorityStyles.normal
+              const priorityLabel = priorityLabels[mail.priority] ?? priorityLabels.normal
+              return (
+                <button
+                  key={mail.id}
+                  type="button"
+                  onClick={() => onSelectMail(mail.id)}
+                  className={`w-full rounded border px-3 py-2 text-left transition ${
+                    isSelected
+                      ? 'border-[var(--accent)] bg-[var(--surface-2)]'
+                      : 'border-[var(--border-soft)] bg-[var(--surface-2)] hover:border-[var(--accent)]'
+                  }`}
+                >
+                  <div className="flex items-start gap-2">
+                    <div className="pt-0.5 text-base leading-none">{mail.icon ?? '✉️'}</div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className={`truncate text-sm ${mail.unread ? 'font-semibold text-[var(--text-main)]' : 'text-[var(--text-soft)]'}`}>
+                          {mail.subject}
+                        </p>
+                        {mail.unread ? <span className="h-2 w-2 rounded-full bg-[var(--accent)]" /> : null}
+                      </div>
+                      <p className="mt-0.5 truncate text-xs text-[var(--text-muted)]">{mail.from}</p>
+                      <p className="mt-1 line-clamp-2 text-xs text-[var(--text-soft)]">{mail.preview}</p>
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <span className={`rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] ${priorityClass}`}>
+                          {priorityLabel}
+                        </span>
+                        <span className="text-[10px] uppercase tracking-[0.08em] text-[var(--text-muted)]">{mail.dateLabel}</span>
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </Panel>
+
+      <Panel title="Lecture" subtitle={selectedMail ? selectedMail.from : 'Selectionne un message'}>
+        {selectedMail ? (
+          <div className="space-y-3">
+            <div>
+              <p className="font-heading text-2xl uppercase tracking-[0.05em] text-[var(--text-main)]">{selectedMail.subject}</p>
+              <p className="mt-1 text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">{selectedMail.dateLabel}</p>
+            </div>
+
+            <div className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-3 text-sm text-[var(--text-soft)]">
+              {selectedMail.body ?? selectedMail.preview}
+            </div>
+
+            {selectedMail.targetPage ? (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => onOpenPage(selectedMail.targetPage)}
+                  className="rounded border border-[var(--accent)] bg-[var(--accent-soft)] px-3 py-1.5 text-xs uppercase tracking-[0.1em] text-[var(--accent)] transition hover:bg-[var(--surface-2)]"
+                >
+                  {selectedMail.ctaLabel ?? 'Ouvrir l ecran'}
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <p className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--text-soft)]">
+            Rien a afficher. Avance le temps pour recevoir des messages.
+          </p>
+        )}
+      </Panel>
+    </div>
+  )
+}
+
+function DashboardPage({ effectif, onOpenPlayerProfile, onOpenSoloQLadder, soloQPreview, matchDayInsights, newsFeed, activeTeamName }) {
   return (
     <div className="space-y-4">
       {matchDayInsights ? (
@@ -3044,13 +3306,15 @@ function DashboardPage({ effectif, onOpenPlayerProfile, onOpenSoloQLadder, soloQ
         </div>
       ) : null}
 
+      <NewsFeedPanel newsFeed={newsFeed} />
+
       <div className="grid gap-4 xl:grid-cols-[2fr_1fr]">
         <div className="space-y-4">
         <Panel title="Prochain adversaire" subtitle="LFL Spring - Week 8">
           <div className="grid gap-3 md:grid-cols-3">
             <article className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2 md:col-span-2">
               <p className="text-[11px] uppercase tracking-[0.08em] text-[var(--text-muted)]">Match principal</p>
-              <p className="mt-1 font-heading text-2xl uppercase tracking-[0.05em]">Aegis Ravens vs Nova Prime</p>
+              <p className="mt-1 font-heading text-2xl uppercase tracking-[0.05em]">{activeTeamName} vs Nova Prime</p>
               <p className="text-sm text-[var(--text-soft)]">Vendredi 19:00 - Patch 14.7</p>
             </article>
             <article className="rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2">
@@ -3205,6 +3469,7 @@ function EffectifPage({ effectif, activeLeague, activeTeamName, onOpenPlayerProf
                   >
                     {row.joueur}
                   </button>
+                  <TraitList traitIds={row.traits} size="sm" showLabel={false} className="mt-0.5" />
                 </td>
                 <td>{row.role}</td>
                 <td>{row.laning}</td>
@@ -3319,6 +3584,36 @@ function toFmFromHundred(value) {
   return clamp(Math.round((value / 100) * 20), 1, 20)
 }
 
+function TraitBadge({ traitId, size = 'md', showLabel = true }) {
+  const trait = getTrait(traitId)
+  if (!trait) return null
+  const sz = size === 'sm'
+    ? 'h-5 px-1.5 text-[9px] gap-1'
+    : size === 'lg'
+      ? 'h-8 px-3 text-xs gap-2'
+      : 'h-6 px-2 text-[10px] gap-1.5'
+  const iconSz = size === 'sm' ? 'text-[10px]' : size === 'lg' ? 'text-sm' : 'text-xs'
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border bg-[var(--surface-2)] font-semibold uppercase tracking-wide ${sz}`}
+      style={{ borderColor: trait.color, color: trait.color }}
+      title={trait.description}
+    >
+      <span className={iconSz}>{trait.icon}</span>
+      {showLabel ? <span>{trait.name}</span> : null}
+    </span>
+  )
+}
+
+function TraitList({ traitIds, size = 'md', showLabel = true, className = '' }) {
+  if (!traitIds?.length) return null
+  return (
+    <div className={`flex flex-wrap items-center gap-1.5 ${className}`}>
+      {traitIds.map((id) => <TraitBadge key={id} traitId={id} size={size} showLabel={showLabel} />)}
+    </div>
+  )
+}
+
 function PlayerProfilePage({ player, profile, onBackToRoster, onTrainChampion }) {
   const [poolSearch, setPoolSearch] = useState('')
 
@@ -3374,6 +3669,7 @@ function PlayerProfilePage({ player, profile, onBackToRoster, onTrainChampion })
                 {profile.realName} - {player.role} - {profile.age} ans - {profile.nationality}
               </p>
               <p className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">Team ID: {player.teamId}</p>
+              <TraitList traitIds={profile.traits} size="md" className="mt-2" />
             </div>
           </div>
 
@@ -5214,7 +5510,6 @@ function MatchLivePage({
   )
 }
 
-
 function MatchResultPage({
   report,
   onBackToCalendar,
@@ -5918,13 +6213,6 @@ function formatBudgetShort(amount) {
   return `${sign}${value}€`
 }
 
-function formatBudgetFull(amount) {
-  const sign = amount < 0 ? '-' : ''
-  const value = Math.abs(Math.round(amount))
-  const formatted = value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
-  return `${sign}${formatted}€`
-}
-
 function buildChampionIdentity(champion, activeLeague) {
   const seed = stableHash(`${champion.id}-${champion.role}`)
   const morale = MORALE_TIERS[(seed >>> 3) % MORALE_TIERS.length]
@@ -6435,36 +6723,165 @@ function ChampionProfileCard({ champion, activeLeague, onClose }) {
   )
 }
 
+function StartScreen({ onStart, onContinue, hasSave }) {
+  const [phase, setPhase] = useState('league')
+  const [leagueId, setLeagueId] = useState(null)
+
+  const leagueList = Object.values(LEAGUES)
+  const teamList = leagueId ? (TEAMS_BY_LEAGUE[leagueId] ?? []) : []
+
+  const handlePickLeague = (id) => {
+    setLeagueId(id)
+    setPhase('team')
+  }
+
+  const handlePickTeam = (teamName) => {
+    const teamId = findTeamIdForLeague(leagueId, teamName) ?? normalizeKey(teamName)
+    onStart(leagueId, teamId)
+  }
+
+  return (
+    <div className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden bg-[var(--bg-app)] px-6">
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="absolute -left-40 -top-40 h-[500px] w-[500px] rounded-full bg-[var(--accent)] opacity-[0.04] blur-[120px]" />
+        <div className="absolute -bottom-40 -right-40 h-[500px] w-[500px] rounded-full bg-sky-500 opacity-[0.04] blur-[120px]" />
+      </div>
+
+      <div className="relative z-10 w-full max-w-5xl">
+        <div className="mb-12 text-center">
+          <p className="text-[10px] uppercase tracking-[0.3em] text-[var(--text-muted)]">Saison 2026</p>
+          <h1 className="font-heading text-6xl font-black uppercase tracking-[0.06em] text-[var(--text-main)] md:text-8xl">
+            Esport Director
+          </h1>
+          <p className="mt-2 text-sm uppercase tracking-[0.18em] text-[var(--text-soft)]">League of Legends Manager</p>
+        </div>
+
+        {phase === 'league' ? (
+          <>
+            <p className="mb-5 text-center text-[11px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
+              Choisis ta ligue
+            </p>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
+              {leagueList.map((league) => {
+                const hasRealData = league.id === 'LEC' || league.id === 'LFL'
+                return (
+                  <button
+                    key={league.id}
+                    type="button"
+                    onClick={() => handlePickLeague(league.id)}
+                    className="group flex flex-col items-center gap-3 rounded border border-[var(--border-soft)] bg-[var(--surface-1)] px-3 py-6 transition hover:border-[var(--accent)] hover:bg-[var(--surface-2)]"
+                  >
+                    <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${
+                      hasRealData
+                        ? 'bg-[rgba(200,170,110,0.18)] text-[var(--accent)]'
+                        : 'bg-[rgba(100,116,139,0.15)] text-slate-400'
+                    }`}>
+                      {hasRealData ? 'Reel' : 'Fictif'}
+                    </span>
+                    <p className="font-heading text-xl uppercase tracking-widest text-[var(--text-main)]">{league.id}</p>
+                    <p className="text-[10px] text-[var(--text-muted)] group-hover:text-[var(--text-soft)]">{league.region}</p>
+                  </button>
+                )
+              })}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="mb-5 flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setPhase('league')}
+                className="text-[11px] uppercase tracking-[0.12em] text-[var(--text-muted)] transition hover:text-[var(--text-soft)]"
+              >
+                &larr; Ligues
+              </button>
+              <span className="text-[var(--border-strong)]">·</span>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                {LEAGUES[leagueId]?.name} &mdash; Choisis ton equipe
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+              {teamList.map((team) => (
+                <button
+                  key={team.name}
+                  type="button"
+                  onClick={() => handlePickTeam(team.name)}
+                  className="group flex flex-col gap-2 rounded border border-[var(--border-soft)] bg-[var(--surface-1)] px-4 py-5 text-left transition hover:border-[var(--accent)] hover:bg-[var(--surface-2)]"
+                >
+                  <p className="font-heading text-base uppercase leading-tight tracking-[0.04em] text-[var(--text-main)]">{team.name}</p>
+                  <div className="mt-auto">
+                    <div className="mb-1 flex items-center justify-between">
+                      <p className="text-[9px] uppercase tracking-[0.1em] text-[var(--text-muted)]">Puissance</p>
+                      <p className="text-[9px] font-semibold text-[var(--text-soft)]">{team.power}</p>
+                    </div>
+                    <div className="h-0.5 overflow-hidden rounded bg-[var(--surface-3)]">
+                      <div
+                        className="h-0.5 rounded bg-[var(--accent)] transition-all"
+                        style={{ width: `${Math.round(Math.max(0, (team.power - 60) / 40) * 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        {hasSave ? (
+          <div className="mt-10 flex justify-center">
+            <button
+              type="button"
+              onClick={onContinue}
+              className="rounded border border-[var(--border-soft)] bg-transparent px-6 py-2.5 text-xs uppercase tracking-[0.14em] text-[var(--text-soft)] transition hover:border-[var(--accent)] hover:text-[var(--text-main)]"
+            >
+              &#8629; Continuer la saison en cours
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 function App() {
-  const [activePage, setActivePage] = useState('dashboard')
-  const [selectedLeagueId, setSelectedLeagueId] = useState('LFL')
-  const [teamSelectionByLeague, setTeamSelectionByLeague] = useState(() => ({ ...DEFAULT_TEAM_BY_LEAGUE }))
+  const [activePage, setActivePage] = useState('mailbox')
+  const [selectedLeagueId, setSelectedLeagueId] = useState(() => _initialSave?.selectedLeagueId ?? 'LFL')
+  const [teamSelectionByLeague, setTeamSelectionByLeague] = useState(() => _initialSave?.teamSelectionByLeague ?? { ...DEFAULT_TEAM_BY_LEAGUE })
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedChampion, setSelectedChampion] = useState(null)
   const [selectedRosterPlayer, setSelectedRosterPlayer] = useState(null)
-  const [rosterProfiles, setRosterProfiles] = useState({})
-  const [currentDate, setCurrentDate] = useState(new Date('2026-01-01T00:00:00'))
-  const [trainingPlan, setTrainingPlan] = useState(() => ({ ...DEFAULT_TRAINING_PLAN }))
-  const [leagueSchedules, setLeagueSchedules] = useState({})
-  const [metaPatch, setMetaPatch] = useState('14.1')
+  const [rosterProfiles, setRosterProfiles] = useState(() => _initialSave?.rosterProfiles ?? {})
+  const [currentDate, setCurrentDate] = useState(() => {
+    // Defensive: legacy saves may have currentDate as ISO string or missing
+    const saved = _initialSave?.currentDate
+    if (saved instanceof Date && !Number.isNaN(saved.getTime())) return saved
+    if (saved) {
+      const parsed = new Date(saved)
+      if (!Number.isNaN(parsed.getTime())) return parsed
+    }
+    return new Date('2026-01-01T00:00:00')
+  })
+  const [trainingPlan, setTrainingPlan] = useState(() => _initialSave?.trainingPlan ?? { ...DEFAULT_TRAINING_PLAN })
+  const [leagueSchedules, setLeagueSchedules] = useState(() => _initialSave?.leagueSchedules ?? {})
+  const [metaPatch, setMetaPatch] = useState(() => _initialSave?.metaPatch ?? '14.1')
   const [timeNotification, setTimeNotification] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
-  const [scoutingQueue, setScoutingQueue] = useState(INITIAL_SCOUTING_QUEUE)
-  const [synergyByTeam, setSynergyByTeam] = useState({})
-  const [draftBonusByTeam, setDraftBonusByTeam] = useState({})
-  const [aggressivite, setAggressivite] = useState(58)
-  const [rythmeJeu, setRythmeJeu] = useState(52)
-  const [prioriteObjectifs, setPrioriteObjectifs] = useState(47)
-  const [focusJoueur, setFocusJoueur] = useState('Miro')
+  const [scoutingQueue, setScoutingQueue] = useState(() => _initialSave?.scoutingQueue ?? INITIAL_SCOUTING_QUEUE)
+  const [synergyByTeam, setSynergyByTeam] = useState(() => _initialSave?.synergyByTeam ?? {})
+  const [draftBonusByTeam, setDraftBonusByTeam] = useState(() => _initialSave?.draftBonusByTeam ?? {})
+  const [aggressivite, setAggressivite] = useState(() => _initialSave?.aggressivite ?? 58)
+  const [rythmeJeu, setRythmeJeu] = useState(() => _initialSave?.rythmeJeu ?? 52)
+  const [prioriteObjectifs, setPrioriteObjectifs] = useState(() => _initialSave?.prioriteObjectifs ?? 47)
+  const [focusJoueur, setFocusJoueur] = useState(() => _initialSave?.focusJoueur ?? 'Miro')
   const [saveMessage, setSaveMessage] = useState('')
-  const [staffTeam, setStaffTeam] = useState(DEFAULT_STAFF_TEAM)
-  const [matchApproachById, setMatchApproachById] = useState({})
-  const [matchDraftById, setMatchDraftById] = useState({})
+  const [staffTeam, setStaffTeam] = useState(() => _initialSave?.staffTeam ?? DEFAULT_STAFF_TEAM)
+  const [matchApproachById, setMatchApproachById] = useState(() => _initialSave?.matchApproachById ?? {})
+  const [matchDraftById, setMatchDraftById] = useState(() => _initialSave?.matchDraftById ?? {})
   const [matchFlowStepById, setMatchFlowStepById] = useState({})
   const [liveMatchSession, setLiveMatchSession] = useState(null)
-  const [lastMatchReport, setLastMatchReport] = useState(null)
-  const [budget, setBudget] = useState(SEASON_START_BUDGET)
-  const [financeLedger, setFinanceLedger] = useState(() => [
+  const [lastMatchReport, setLastMatchReport] = useState(() => _initialSave?.lastMatchReport ?? null)
+  const [budget, setBudget] = useState(() => _initialSave?.budget ?? SEASON_START_BUDGET)
+  const [financeLedger, setFinanceLedger] = useState(() => _initialSave?.financeLedger ?? [
     {
       id: 'seed-sponsor',
       label: 'Contrat initial - Fond saison',
@@ -6474,42 +6891,287 @@ function App() {
     },
   ])
   const [sponsorContracts, setSponsorContracts] = useState(() =>
-    SPONSOR_CONTRACTS.map((sponsor) => ({ ...sponsor, status: 'active', progress: 0 })),
+    _initialSave?.sponsorContracts ?? SPONSOR_CONTRACTS.map((sponsor) => ({ ...sponsor, status: 'active', progress: 0 })),
   )
   const [boardObjectives, setBoardObjectives] = useState(() =>
-    BOARD_OBJECTIVES.map((objective) => ({ ...objective, status: 'pending', progress: 0 })),
+    _initialSave?.boardObjectives ?? BOARD_OBJECTIVES.map((objective) => ({ ...objective, status: 'pending', progress: 0 })),
   )
-  const [seasonReview, setSeasonReview] = useState(null)
-  const [gameOver, setGameOver] = useState(null)
-  const [metaPatchState, setMetaPatchState] = useState(() => ({
+  const [gameOver, setGameOver] = useState(() => _initialSave?.gameOver ?? null)
+  const [metaPatchState, setMetaPatchState] = useState(() => _initialSave?.metaPatchState ?? {
     version: '14.1',
     boostedArchetype: META_PATCH_ARCHETYPES[0],
     nerfedArchetype: META_PATCH_ARCHETYPES[1],
     boostedChampions: [],
     nerfedChampions: [],
-  }))
-  const [patchHistory, setPatchHistory] = useState(() => [])
-  const [transferMarket, setTransferMarket] = useState(() => buildTransferMarketFromPool(null, 8))
-  const [matchHistory, setMatchHistory] = useState([])
+  })
+  const [, setPatchHistory] = useState(() => [])
+  const [transferMarket, setTransferMarket] = useState(() => _initialSave?.transferMarket ?? buildTransferMarketFromPool(null, 8))
+  const [matchHistory, setMatchHistory] = useState(() => _initialSave?.matchHistory ?? [])
+  const [gamePhase, setGamePhase] = useState(() => _initialSave?.gamePhase ?? 'setup')
+  const [newsFeed, setNewsFeed] = useState(() => _initialSave?.newsFeed ?? [])
+  const [lastNewsWeekIndex, setLastNewsWeekIndex] = useState(() => _initialSave?.lastNewsWeekIndex ?? -1)
+  const [pendingDecision, setPendingDecision] = useState(() => _initialSave?.pendingDecision ?? null)
+  const [mailboxReadById, setMailboxReadById] = useState(() => _initialSave?.mailboxReadById ?? {})
+  const [selectedMailId, setSelectedMailId] = useState(() => _initialSave?.selectedMailId ?? null)
+
+  const handleStartGame = (lgId, teamId) => {
+    // Hard reset runtime state so a "new game" can never inherit old season data.
+    clearGameState()
+
+    setActivePage('mailbox')
+    setSelectedLeagueId(lgId)
+    setTeamSelectionByLeague({ ...DEFAULT_TEAM_BY_LEAGUE, [lgId]: teamId })
+    setSearchQuery('')
+    setSelectedChampion(null)
+    setSelectedRosterPlayer(null)
+
+    setRosterProfiles({})
+    setCurrentDate(new Date('2026-01-01T00:00:00'))
+    setTrainingPlan({ ...DEFAULT_TRAINING_PLAN })
+    setLeagueSchedules({})
+    setMetaPatch('14.1')
+
+    setTimeNotification('')
+    setIsProcessing(false)
+    setScoutingQueue(INITIAL_SCOUTING_QUEUE)
+    setSynergyByTeam({})
+    setDraftBonusByTeam({})
+    setAggressivite(58)
+    setRythmeJeu(52)
+    setPrioriteObjectifs(47)
+    setFocusJoueur('Miro')
+    setSaveMessage('')
+
+    setStaffTeam(DEFAULT_STAFF_TEAM)
+    setMatchApproachById({})
+    setMatchDraftById({})
+    setMatchFlowStepById({})
+    setLiveMatchSession(null)
+    setLastMatchReport(null)
+
+    setBudget(SEASON_START_BUDGET)
+    setFinanceLedger([
+      {
+        id: 'seed-sponsor',
+        label: 'Contrat initial - Fond saison',
+        amount: SEASON_START_BUDGET,
+        dateKey: '2026-01-01',
+        type: 'credit',
+      },
+    ])
+    setSponsorContracts(SPONSOR_CONTRACTS.map((sponsor) => ({ ...sponsor, status: 'active', progress: 0 })))
+    setBoardObjectives(BOARD_OBJECTIVES.map((objective) => ({ ...objective, status: 'pending', progress: 0 })))
+    setGameOver(null)
+    setMetaPatchState({
+      version: '14.1',
+      boostedArchetype: META_PATCH_ARCHETYPES[0],
+      nerfedArchetype: META_PATCH_ARCHETYPES[1],
+      boostedChampions: [],
+      nerfedChampions: [],
+    })
+    setPatchHistory([])
+    setTransferMarket(buildTransferMarketFromPool(null, 8))
+    setMatchHistory([])
+    setNewsFeed([])
+    setLastNewsWeekIndex(-1)
+    setPendingDecision(null)
+    setMailboxReadById({})
+    setSelectedMailId(null)
+
+    setGamePhase('game')
+  }
+  const handleContinueGame = () => {
+    setActivePage('mailbox')
+    setGamePhase('game')
+  }
+  const handleNewGame = () => {
+    clearGameState()
+    window.location.reload()
+  }
+
+  useEffect(() => {
+    if (gamePhase !== 'game') return
+    const tid = setTimeout(() => {
+      saveGameState({
+        gamePhase,
+        selectedLeagueId,
+        teamSelectionByLeague,
+        rosterProfiles,
+        currentDate,
+        trainingPlan,
+        leagueSchedules,
+        metaPatch,
+        scoutingQueue,
+        synergyByTeam,
+        draftBonusByTeam,
+        aggressivite,
+        rythmeJeu,
+        prioriteObjectifs,
+        focusJoueur,
+        staffTeam,
+        matchApproachById,
+        matchDraftById,
+        lastMatchReport,
+        budget,
+        financeLedger,
+        sponsorContracts,
+        boardObjectives,
+        gameOver,
+        metaPatchState,
+        transferMarket,
+        matchHistory,
+        newsFeed,
+        lastNewsWeekIndex,
+        pendingDecision,
+        mailboxReadById,
+        selectedMailId,
+      })
+    }, 1500)
+    return () => clearTimeout(tid)
+  }, [
+    gamePhase, selectedLeagueId, teamSelectionByLeague, rosterProfiles, currentDate,
+    trainingPlan, leagueSchedules, metaPatch, scoutingQueue, synergyByTeam,
+    draftBonusByTeam, aggressivite, rythmeJeu, prioriteObjectifs, focusJoueur,
+    staffTeam, matchApproachById, matchDraftById, lastMatchReport, budget,
+    financeLedger, sponsorContracts, boardObjectives, gameOver, metaPatchState,
+    transferMarket, matchHistory, newsFeed, lastNewsWeekIndex, pendingDecision,
+    mailboxReadById, selectedMailId,
+  ])
+
+  // ─── Weekly events rolling ──────────────────────────────────────────────
+  // Triggered on currentDate change. Rolls random events for each player once
+  // per calendar week. Applies effects (condition, moral, budget, LP, stat bonuses)
+  // directly to the relevant states and prepends events to the news feed.
+  useEffect(() => {
+    if (gamePhase !== 'game') return
+    const currentWeek = getWeekIndex(currentDate)
+    if (currentWeek <= lastNewsWeekIndex) return
+
+    // Build a light roster payload for event rolling (playerId, pseudo, traits)
+    const rosterForEvents = baseRosterPlayers.map((player) => {
+      const profile = rosterProfiles[player.playerId] ?? baseRosterProfiles[player.playerId]
+      return {
+        playerId: player.playerId,
+        pseudo: profile?.pseudo ?? player.joueur,
+        traits: profile?.traits ?? baseRosterProfiles[player.playerId]?.traits ?? [],
+      }
+    })
+
+    const events = rollWeeklyEventsForRoster(rosterForEvents, {
+      seed: `${selectedLeagueId}-${activeTeamId ?? 'none'}`,
+      weekIndex: currentWeek,
+    })
+
+    if (events.length > 0) {
+      // Apply effects in a single batch
+      let totalBudgetDelta = 0
+      const budgetLedgerEntries = []
+      const profileUpdates = {}
+
+      for (const evt of events) {
+        const fx = evt.effects ?? {}
+        if (fx.budgetDelta) {
+          totalBudgetDelta += fx.budgetDelta
+          budgetLedgerEntries.push({
+            id: `event-${evt.id}`,
+            label: evt.headline,
+            amount: fx.budgetDelta,
+            date: currentDate.toISOString(),
+          })
+        }
+        if (fx.playerId) {
+          const prev = profileUpdates[fx.playerId] ?? {}
+          profileUpdates[fx.playerId] = {
+            conditionDelta: (prev.conditionDelta ?? 0) + (fx.conditionDelta ?? 0) + (fx.moralDelta ?? 0) * 3,
+            ladderLpDelta: (prev.ladderLpDelta ?? 0) + (fx.ladderLpDelta ?? 0),
+            stats: {
+              mechanics: (prev.stats?.mechanics ?? 0) + (fx.stats?.mechanics ?? 0),
+              teamfight: (prev.stats?.teamfight ?? 0) + (fx.stats?.teamfight ?? 0),
+              macro:     (prev.stats?.macro     ?? 0) + (fx.stats?.macro     ?? 0),
+            },
+          }
+        }
+      }
+
+      if (totalBudgetDelta !== 0) {
+        setBudget((prev) => prev + totalBudgetDelta)
+        setFinanceLedger((prev) => [...budgetLedgerEntries, ...prev].slice(0, 40))
+      }
+
+      if (Object.keys(profileUpdates).length > 0) {
+        setRosterProfiles((prev) => {
+          const next = { ...prev }
+          for (const [playerId, delta] of Object.entries(profileUpdates)) {
+            const base = next[playerId] ?? baseRosterProfiles[playerId]
+            if (!base) continue
+            const nextCondition = clamp((base.condition ?? 70) + delta.conditionDelta, 20, 100)
+            const nextLp = clamp((base.ladderLP ?? 800) + delta.ladderLpDelta, 0, 1800)
+            next[playerId] = {
+              ...base,
+              condition: nextCondition,
+              moral: moraleFromCondition(nextCondition),
+              ladderLP: nextLp,
+              mechanicsBonus: (base.mechanicsBonus ?? 0) + delta.stats.mechanics,
+              teamfightBonus: (base.teamfightBonus ?? 0) + delta.stats.teamfight,
+              macroBonus:     (base.macroBonus     ?? 0) + delta.stats.macro,
+            }
+          }
+          return next
+        })
+      }
+
+      setNewsFeed((prev) => [...events, ...prev].slice(0, 50))
+    }
+
+    // Roll a decision event (~30% chance) only if none is currently pending
+    if (!pendingDecision) {
+      const decision = rollWeeklyDecision(rosterForEvents, {
+        seed: `${selectedLeagueId}-${activeTeamId ?? 'none'}`,
+        weekIndex: currentWeek,
+      })
+      if (decision) {
+        setPendingDecision(decision)
+      }
+    }
+
+    setLastNewsWeekIndex(currentWeek)
+    // Intentionally scoped deps: we only want this to fire on date/phase change.
+    // All other references (baseRosterPlayers, rosterProfiles, etc.) are captured
+    // via closure and intentionally left out to avoid re-rolling mid-week.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentDate, gamePhase])
 
   const activeLeague = LEAGUES[selectedLeagueId]
   const standings = getLeagueStandings(selectedLeagueId)
   const worldRanking = getWorldPowerRanking(10)
-  const leagueProPlayers = PRO_PLAYERS_BY_LEAGUE[selectedLeagueId] ?? []
+  const leagueProPlayers = useMemo(() => PRO_PLAYERS_BY_LEAGUE[selectedLeagueId] ?? [], [selectedLeagueId])
   const selectedTeamId = teamSelectionByLeague[selectedLeagueId] ?? null
+  const leagueDefaultTeamId = DEFAULT_TEAM_BY_LEAGUE[selectedLeagueId] ?? leagueProPlayers[0]?.team_id ?? null
 
-  const activeTeamId =
-    leagueProPlayers.find((player) => player.team_id === selectedTeamId)?.team_id ??
-    DEFAULT_TEAM_BY_LEAGUE[selectedLeagueId] ??
-    leagueProPlayers[0]?.team_id ??
-    null
+  // Always preserve the user's selected team identity.
+  // If no explicit selection exists yet, fallback to league default.
+  const activeTeamId = selectedTeamId ?? leagueDefaultTeamId
 
-  const baseRosterPlayers =
-    leagueProPlayers.length > 0 && activeTeamId
-      ? leagueProPlayers.filter((player) => player.team_id === activeTeamId).map(mapProPlayerToRosterRow)
-      : joueurs.map(mapFallbackPlayerToRosterRow)
+  const baseRosterPlayers = useMemo(
+    () => {
+      if (!activeTeamId || leagueProPlayers.length === 0) {
+        return joueurs.map(mapFallbackPlayerToRosterRow)
+      }
 
-  const baseRosterProfiles = buildInitialRosterProfiles(baseRosterPlayers)
+      const selectedLeagueRoster = leagueProPlayers
+        .filter((player) => player.team_id === activeTeamId)
+        .map(mapProPlayerToRosterRow)
+
+      // Some teams exist in TEAMS_BY_LEAGUE but have no seeded pro roster yet.
+      // Keep the chosen team and fallback to generated players instead of switching teams.
+      return selectedLeagueRoster.length > 0
+        ? selectedLeagueRoster
+        : joueurs.map(mapFallbackPlayerToRosterRow)
+    },
+    [activeTeamId, leagueProPlayers],
+  )
+
+  const baseRosterProfiles = useMemo(() => buildInitialRosterProfiles(baseRosterPlayers), [baseRosterPlayers])
   const activeTeamName = activeTeamId ? getTeamNameByLeagueAndId(selectedLeagueId, activeTeamId) : 'Equipe inconnue'
   const scheduleKey = `${selectedLeagueId}:${activeTeamId ?? 'none'}`
   const generatedSchedule = buildSeasonSchedule(selectedLeagueId, activeTeamName)
@@ -6532,23 +7194,32 @@ function App() {
       ? selectedRosterPlayer
       : baseRosterPlayers[0]?.playerId ?? null
 
-  const effectifAvecBonusTier = applyLeagueTierBonusToPlayers(baseRosterPlayers, activeLeague).map((player) => {
-    const profile = rosterProfiles[player.playerId] ?? baseRosterProfiles[player.playerId]
-    return {
-      ...player,
-      teamfight: clamp(player.teamfight + (profile?.teamfightBonus ?? 0), 1, 99),
-      mechanics: clamp(player.mechanics + (profile?.mechanicsBonus ?? 0), 1, 99),
-      macro: clamp(player.macro + (profile?.macroBonus ?? 0), 1, 99),
-      mental: clamp(profile?.mental ?? player.mental ?? 14, 1, 20),
-      moral: profile?.moral ?? player.moral,
-      forme: profile ? (profile.condition / 10).toFixed(1) : player.forme,
-    }
-  })
+  const effectifAvecBonusTier = useMemo(
+    () =>
+      applyLeagueTierBonusToPlayers(baseRosterPlayers, activeLeague).map((player) => {
+        const profile = rosterProfiles[player.playerId] ?? baseRosterProfiles[player.playerId]
+        // Traits fallback: legacy saves may lack them → regenerate from base profile
+        const traits = profile?.traits ?? baseRosterProfiles[player.playerId]?.traits ?? []
+        const traitBonuses = getTraitStatBonuses(traits)
+        return {
+          ...player,
+          teamfight: clamp(player.teamfight + (profile?.teamfightBonus ?? 0) + traitBonuses.teamfight, 1, 99),
+          mechanics: clamp(player.mechanics + (profile?.mechanicsBonus ?? 0) + traitBonuses.mechanics, 1, 99),
+          macro:     clamp(player.macro     + (profile?.macroBonus     ?? 0) + traitBonuses.macro,     1, 99),
+          laning:    clamp(player.laning    + traitBonuses.laning,                                     1, 99),
+          mental:    clamp((profile?.mental ?? player.mental ?? 14) + traitBonuses.mental,             1, 20),
+          moral: profile?.moral ?? player.moral,
+          forme: profile ? (profile.condition / 10).toFixed(1) : player.forme,
+          traits,
+        }
+      }),
+    [baseRosterPlayers, rosterProfiles, baseRosterProfiles, activeLeague],
+  )
   const selectedPlayerData = effectifAvecBonusTier.find((player) => player.playerId === activeRosterPlayerId) ?? null
   const selectedPlayerProfile = selectedPlayerData
     ? (rosterProfiles[selectedPlayerData.playerId] ?? baseRosterProfiles[selectedPlayerData.playerId])
     : null
-  const soloQEuropeRanking = buildEuropeSoloQRanking(PRO_PLAYERS, rosterProfiles)
+  const soloQEuropeRanking = useMemo(() => buildEuropeSoloQRanking(PRO_PLAYERS, rosterProfiles), [rosterProfiles])
   const soloQPreview = soloQEuropeRanking.slice(0, 5)
   const selectedMatchApproachId =
     matchToday ? (matchApproachById[matchToday.id] ?? DEFAULT_MATCH_APPROACH_ID) : DEFAULT_MATCH_APPROACH_ID
@@ -6758,6 +7429,207 @@ function App() {
 
   const searchResults = [...championResults, ...pageResults, ...leagueResults, ...teamResults].slice(0, 10)
 
+  const mailboxMails = useMemo(() => {
+    const now = currentDate instanceof Date ? currentDate.getTime() : new Date(currentDate).getTime()
+    const currentDateLabel = formatDateLong(currentDate)
+    const items = []
+
+    if (pendingDecision) {
+      items.push({
+        id: `decision-${pendingDecision.id}`,
+        from: 'Direction sportive',
+        subject: pendingDecision.headline ?? 'Decision en attente',
+        preview: pendingDecision.prompt ?? 'Votre validation est requise pour poursuivre la saison.',
+        body: pendingDecision.prompt ?? 'Un choix du staff est requis avant la prochaine etape.',
+        icon: '🧭',
+        priority: 'urgent',
+        dateLabel: `Semaine ${(pendingDecision.weekIndex ?? 0) + 1}`,
+        targetPage: 'dashboard',
+        ctaLabel: 'Voir le contexte',
+        sortKey: now + 1200,
+      })
+    }
+
+    if (matchToday) {
+      items.push({
+        id: `match-day-${matchToday.id}`,
+        from: 'Coach principal',
+        subject: `Jour de match: ${activeTeamName} vs ${matchToday.opponent}`,
+        preview: 'Le staff attend votre plan de jeu et la validation de la draft.',
+        body: `Le match est programme pour aujourd hui contre ${matchToday.opponent}. Passe en Match Day pour finaliser les reglages.`,
+        icon: '🎯',
+        priority: 'high',
+        dateLabel: currentDateLabel,
+        targetPage: 'match-day',
+        ctaLabel: 'Aller en Match Day',
+        sortKey: now + 1000,
+      })
+    }
+
+    if (lastMatchReport) {
+      items.push({
+        id: `report-${lastMatchReport.matchId}`,
+        from: 'Cellule analytique',
+        subject: `${lastMatchReport.teamWon ? 'Victoire' : 'Defaite'} vs ${lastMatchReport.opponentName}`,
+        preview: `Serie ${lastMatchReport.seriesScore} · MVP ${lastMatchReport.mvp?.playerName ?? 'N/A'}`,
+        body: `Compte-rendu disponible: ${lastMatchReport.teamName} ${lastMatchReport.seriesScore} ${lastMatchReport.opponentName}. Analyse complete dans le dashboard.`,
+        icon: lastMatchReport.teamWon ? '🏆' : '📉',
+        priority: 'normal',
+        dateLabel: currentDateLabel,
+        targetPage: 'dashboard',
+        ctaLabel: 'Lire le rapport',
+        sortKey: now + 700,
+      })
+    }
+
+    boardObjectives
+      .filter((objective) => objective.status !== 'completed')
+      .slice(0, 3)
+      .forEach((objective, index) => {
+        items.push({
+          id: `board-${objective.id}`,
+          from: 'Board management',
+          subject: `Objectif: ${objective.label}`,
+          preview: `Recompense potentielle: ${formatBudgetShort(objective.reward ?? 0)}.`,
+          body: `Le board suit cet objectif de pres. Statut actuel: ${objective.status ?? 'pending'}.`,
+          icon: '📌',
+          priority: index === 0 ? 'high' : 'normal',
+          dateLabel: 'Saison en cours',
+          targetPage: 'finances',
+          ctaLabel: 'Voir finances et objectifs',
+          sortKey: now + (500 - index),
+        })
+      })
+
+    sponsorContracts
+      .filter((contract) => contract.status === 'active')
+      .slice(0, 2)
+      .forEach((contract, index) => {
+        items.push({
+          id: `sponsor-${contract.id}`,
+          from: contract.label,
+          subject: `Contrat actif: ${contract.label}`,
+          preview: `Versement mensuel: ${formatBudgetShort(contract.monthly ?? 0)}.`,
+          body: `Suivi sponsor en cours. Cible bonus: ${contract.target?.type ?? 'objectif'} (${contract.target?.value ?? '-'}) pour ${formatBudgetShort(contract.target?.bonus ?? 0)}.`,
+          icon: '💼',
+          priority: 'normal',
+          dateLabel: 'Partenariat',
+          targetPage: 'finances',
+          ctaLabel: 'Ouvrir finances',
+          sortKey: now + (300 - index),
+        })
+      })
+
+    if (timeNotification) {
+      items.push({
+        id: `system-time-${todayKey}`,
+        from: 'Systeme de ligue',
+        subject: 'Mise a jour du jour',
+        preview: timeNotification,
+        body: timeNotification,
+        icon: '⏱️',
+        priority: 'normal',
+        dateLabel: currentDateLabel,
+        sortKey: now + 200,
+      })
+    }
+
+    if (saveMessage) {
+      items.push({
+        id: `system-save-${todayKey}`,
+        from: 'Systeme',
+        subject: 'Etat enregistre',
+        preview: saveMessage,
+        body: saveMessage,
+        icon: '💾',
+        priority: 'normal',
+        dateLabel: currentDateLabel,
+        sortKey: now + 150,
+      })
+    }
+
+    newsFeed.slice(0, 20).forEach((evt, index) => {
+      const categoryPriority = evt.category === 'negative' ? 'high' : 'normal'
+      items.push({
+        id: `news-${evt.id}`,
+        from: 'Media & scene',
+        subject: evt.headline,
+        preview: evt.body,
+        body: evt.body,
+        icon: evt.icon ?? '📰',
+        priority: categoryPriority,
+        dateLabel: `Semaine ${(evt.weekIndex ?? 0) + 1}`,
+        sortKey: Number.isFinite(evt.timestamp) ? evt.timestamp : now - (1000 + index),
+      })
+    })
+
+    const deduped = Array.from(new Map(items.map((item) => [item.id, item])).values())
+
+    const priorityOrder = { urgent: 3, high: 2, normal: 1 }
+    const ordered = deduped.sort((a, b) => {
+      const p = (priorityOrder[b.priority] ?? 1) - (priorityOrder[a.priority] ?? 1)
+      if (p !== 0) return p
+      return (b.sortKey ?? 0) - (a.sortKey ?? 0)
+    })
+
+    return ordered.map((mail) => ({
+      ...mail,
+      unread: !mailboxReadById[mail.id],
+    }))
+  }, [
+    currentDate,
+    pendingDecision,
+    matchToday,
+    activeTeamName,
+    lastMatchReport,
+    boardObjectives,
+    sponsorContracts,
+    timeNotification,
+    saveMessage,
+    newsFeed,
+    todayKey,
+    mailboxReadById,
+  ])
+
+  const mailboxUnreadCount = mailboxMails.filter((mail) => mail.unread).length
+
+  useEffect(() => {
+    if (!mailboxMails.length) {
+      if (selectedMailId !== null) {
+        setSelectedMailId(null)
+      }
+      return
+    }
+
+    const selectionExists = selectedMailId ? mailboxMails.some((mail) => mail.id === selectedMailId) : false
+    if (!selectionExists) {
+      const firstUnread = mailboxMails.find((mail) => mail.unread)
+      setSelectedMailId((firstUnread ?? mailboxMails[0]).id)
+    }
+  }, [mailboxMails, selectedMailId])
+
+  const handleSelectMailboxMail = (mailId) => {
+    setSelectedMailId(mailId)
+    setMailboxReadById((prev) => {
+      if (prev[mailId]) return prev
+      return {
+        ...prev,
+        [mailId]: true,
+      }
+    })
+  }
+
+  const handleMarkAllMailboxRead = () => {
+    if (!mailboxMails.length) return
+    setMailboxReadById((prev) => {
+      const next = { ...prev }
+      mailboxMails.forEach((mail) => {
+        next[mail.id] = true
+      })
+      return next
+    })
+  }
+
   const handleSaveTactique = () => {
     setSaveMessage('Tactique sauvegardee - preset operationnel pour le prochain match.')
   }
@@ -6766,6 +7638,64 @@ function App() {
     setSelectedRosterPlayer(playerId)
     setSelectedChampion(null)
     setActivePage('profil-joueur')
+  }
+
+  const handleResolveDecision = (choiceId) => {
+    if (!pendingDecision) return
+    const choice = pendingDecision.choices.find((c) => c.id === choiceId)
+    if (!choice) return
+
+    const fx = choice.effects ?? {}
+    const totalConditionDelta = (fx.conditionDelta ?? 0) + (fx.moralDelta ?? 0) * 3
+
+    // Budget
+    if (fx.budgetDelta) {
+      setBudget((prev) => prev + fx.budgetDelta)
+      setFinanceLedger((prev) => [{
+        id: `decision-${pendingDecision.id}-${choiceId}`,
+        label: pendingDecision.headline,
+        amount: fx.budgetDelta,
+        date: currentDate.toISOString(),
+      }, ...prev].slice(0, 40))
+    }
+
+    // Player-targeted effects
+    if (fx.playerId) {
+      setRosterProfiles((prev) => {
+        const base = prev[fx.playerId] ?? baseRosterProfiles[fx.playerId]
+        if (!base) return prev
+        const nextCondition = clamp((base.condition ?? 70) + totalConditionDelta, 20, 100)
+        const nextLp = clamp((base.ladderLP ?? 800) + (fx.ladderLpDelta ?? 0), 0, 1800)
+        return {
+          ...prev,
+          [fx.playerId]: {
+            ...base,
+            condition: nextCondition,
+            moral: moraleFromCondition(nextCondition),
+            ladderLP: nextLp,
+            mechanicsBonus: (base.mechanicsBonus ?? 0) + (fx.stats?.mechanics ?? 0),
+            teamfightBonus: (base.teamfightBonus ?? 0) + (fx.stats?.teamfight ?? 0),
+            macroBonus:     (base.macroBonus     ?? 0) + (fx.stats?.macro     ?? 0),
+          },
+        }
+      })
+    }
+
+    // Push the outcome to news feed so it leaves a trace
+    const outcomeEntry = {
+      id: `decision-outcome-${pendingDecision.id}-${choiceId}`,
+      eventId: pendingDecision.templateId,
+      category: 'neutral',
+      icon: pendingDecision.icon,
+      headline: `${pendingDecision.headline} — ${choice.label}`,
+      body: choice.summary ?? choice.description ?? '',
+      effects: fx,
+      weekIndex: pendingDecision.weekIndex,
+      timestamp: Date.now(),
+    }
+    setNewsFeed((prev) => [outcomeEntry, ...prev].slice(0, 50))
+
+    setPendingDecision(null)
   }
 
   const handleOpenSoloQLadder = () => {
@@ -8383,6 +9313,15 @@ function App() {
   const activeNavLabel = pageDirectory.find((item) => item.id === activePage)?.label ?? 'Tableau de bord'
 
   const pages = {
+    mailbox: (
+      <MailboxPage
+        mails={mailboxMails}
+        selectedMailId={selectedMailId}
+        onSelectMail={handleSelectMailboxMail}
+        onMarkAllRead={handleMarkAllMailboxRead}
+        onOpenPage={setActivePage}
+      />
+    ),
     dashboard: (
       <DashboardPage
         effectif={effectifAvecBonusTier}
@@ -8390,6 +9329,8 @@ function App() {
         onOpenSoloQLadder={handleOpenSoloQLadder}
         soloQPreview={soloQPreview}
         matchDayInsights={dashboardMatchInsights}
+        newsFeed={newsFeed}
+        activeTeamName={activeTeamName}
       />
     ),
     championnat: (
@@ -8541,6 +9482,16 @@ function App() {
     ),
   }
 
+  if (gamePhase === 'setup') {
+    return (
+      <StartScreen
+        onStart={handleStartGame}
+        onContinue={handleContinueGame}
+        hasSave={Boolean(_initialSave)}
+      />
+    )
+  }
+
   const isMatchFullscreenPage = activePage === 'match-day' || activePage === 'match-live' || activePage === 'match-result'
 
   if (isMatchFullscreenPage) {
@@ -8612,12 +9563,7 @@ function App() {
               </p>
               <button
                 type="button"
-                onClick={() => {
-                  setGameOver(null)
-                  setBudget(SEASON_START_BUDGET)
-                  setFinanceLedger([])
-                  setCurrentDate(new Date('2026-01-01T00:00:00'))
-                }}
+                onClick={handleNewGame}
                 className="mt-4 w-full rounded border border-[var(--accent)] bg-[color:rgba(200,170,110,0.18)] px-3 py-2 text-xs uppercase tracking-[0.08em] text-[var(--text-main)] hover:bg-[color:rgba(200,170,110,0.28)]"
               >
                 Recommencer une saison
@@ -8658,6 +9604,7 @@ function App() {
                 <p className="px-1 text-[10px] uppercase tracking-[0.1em] text-[var(--text-muted)]">{group.title}</p>
                 {group.items.map((item) => {
                   const Icon = item.icon
+                  const showMailboxBadge = item.id === 'mailbox' && mailboxUnreadCount > 0
                   return (
                     <button
                       key={item.id}
@@ -8672,14 +9619,30 @@ function App() {
                       <span className="mb-1 flex h-7 w-7 items-center justify-center rounded bg-[var(--surface-3)]">
                         <Icon size={15} className="text-[var(--text-soft)] group-hover:text-[var(--text-main)]" />
                       </span>
-                      <span className="text-center text-[10px] uppercase tracking-[0.09em] text-[var(--text-muted)] group-hover:text-[var(--text-main)]">
-                        {item.label}
-                      </span>
+                      <div className="flex items-center gap-1">
+                        <span className="text-center text-[10px] uppercase tracking-[0.09em] text-[var(--text-muted)] group-hover:text-[var(--text-main)]">
+                          {item.label}
+                        </span>
+                        {showMailboxBadge ? (
+                          <span className="rounded border border-[var(--accent)] bg-[var(--accent-soft)] px-1 py-0.5 text-[9px] font-semibold text-[var(--accent)]">
+                            {mailboxUnreadCount > 99 ? '99+' : mailboxUnreadCount}
+                          </span>
+                        ) : null}
+                      </div>
                     </button>
                   )
                 })}
               </div>
             ))}
+            <div className="mt-auto pt-2">
+              <button
+                type="button"
+                onClick={handleNewGame}
+                className="w-full rounded border border-[var(--border-soft)] bg-transparent px-1 py-2 text-[9px] uppercase tracking-[0.1em] text-[var(--text-muted)] transition hover:border-[var(--accent)] hover:text-[var(--text-main)]"
+              >
+                Nvl. Partie
+              </button>
+            </div>
           </div>
         </aside>
 
@@ -8688,7 +9651,7 @@ function App() {
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-[11px] uppercase tracking-[0.1em] text-[var(--text-muted)]">Esport Director - League of Legends</p>
-                <h1 className="font-heading text-[1.55rem] uppercase tracking-[0.05em]">Aegis Ravens</h1>
+                <h1 className="font-heading text-[1.55rem] uppercase tracking-[0.05em]">{activeTeamName}</h1>
                 <p className="text-sm text-[var(--text-soft)]">
                   Manager: You | Patch: {metaPatch} | Date: {formatDateLong(currentDate)}
                 </p>
@@ -8814,6 +9777,8 @@ function App() {
           </div>
         </div>
       ) : null}
+
+      <DecisionEventModal decision={pendingDecision} onResolve={handleResolveDecision} />
     </div>
   )
 }
