@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   BarChart2,
   Calendar,
@@ -4569,26 +4569,9 @@ function MatchDayPage({
   const [swapFromRole, setSwapFromRole] = useState('Top')
   const [swapToRole, setSwapToRole] = useState('Jungle')
   const [pendingSwap, setPendingSwap] = useState(null)
-  const [banSearch, setBanSearch] = useState('')
-  const [banRoleFilter, setBanRoleFilter] = useState('ALL')
-  const [pickSearch, setPickSearch] = useState('')
-
-  if (!match) {
-    return (
-      <Panel title="Match Day" subtitle="Aucun match aujourd'hui">
-        <p className="text-sm text-[var(--text-soft)]">
-          Aucun match n est programme sur cette date. Tu peux continuer le temps ou verifier le calendrier.
-        </p>
-        <button
-          type="button"
-          onClick={onOpenCalendar}
-          className="mt-3 rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2 text-xs uppercase tracking-[0.08em] text-[var(--text-soft)] hover:border-[var(--accent)]"
-        >
-          Ouvrir le calendrier
-        </button>
-      </Panel>
-    )
-  }
+  const [activeRoleFilter, setActiveRoleFilter] = useState('ALL')
+  const lastDoubleClickedStepRef = useRef(null)
+  const [previewChampionKey, setPreviewChampionKey] = useState(null)
 
   const selectedApproach = getMatchApproachById(selectedApproachId)
   const step = clamp(flowStep ?? 1, 1, MATCH_DAY_STEP_COUNT)
@@ -4616,9 +4599,7 @@ function MatchDayPage({
       ? `${currentTurn.side === 'blue' ? 'Blue' : 'Red'} pick ${currentTurn.roles.join(' + ')}`
       : 'Draft verrouillee - phase de swap active'
   const comfortChampionIds = new Set((opponentComfortPool ?? []).map((entry) => entry.championId))
-  const normalizedBanSearch = banSearch.trim().toLowerCase()
-  const normalizedPickSearch = pickSearch.trim().toLowerCase()
-  const enemyDraftBanKeys = (enemyBans?.length ? enemyBans : (match.draftState?.bans?.enemy ?? []))
+  const enemyDraftBanKeys = (enemyBans?.length ? enemyBans : (match?.draftState?.bans?.enemy ?? []))
     .map((entry) => (typeof entry === 'string' ? entry : entry?.key))
     .filter(Boolean)
   const seen = new Set()
@@ -4631,26 +4612,19 @@ function MatchDayPage({
 
   const allChampionBanOptions = uniqueChampionOptions
     .filter((champion) => {
-      if (banRoleFilter !== 'ALL' && champion.role !== banRoleFilter) {
+      if (activeRoleFilter !== 'ALL' && champion.role !== activeRoleFilter) {
         return false
       }
-
-      if (!normalizedBanSearch) {
-        return true
-      }
-
-      const haystack = `${champion.name} ${champion.id} ${champion.role} ${(champion.tags ?? []).join(' ')}`.toLowerCase()
-      return haystack.includes(normalizedBanSearch)
+      return true
     })
     .sort((a, b) => a.name.localeCompare(b.name))
+    
   const allChampionPickOptions = uniqueChampionOptions
     .filter((champion) => {
-      if (!normalizedPickSearch) {
-        return true
+      if (activeRoleFilter !== 'ALL' && champion.role !== activeRoleFilter) {
+        return false
       }
-
-      const haystack = `${champion.name} ${champion.id} ${champion.role} ${(champion.tags ?? []).join(' ')}`.toLowerCase()
-      return haystack.includes(normalizedPickSearch)
+      return true
     })
     .sort((a, b) => a.name.localeCompare(b.name))
   const canGoNext =
@@ -4662,6 +4636,76 @@ function MatchDayPage({
           ? (isDraftOrderComplete || isWaitingSecondBanPhase)
           : false
   const nextBluePickRole = currentBlueRoles.find((role) => !playerPicks[role]) ?? currentBlueRoles[0] ?? null
+
+  const handleChampionGridClick = (championKey, isLocked = false) => {
+    setPreviewChampionKey(championKey)
+
+    if (step === 2) {
+      if (selectedBans.includes(championKey) || selectedBans.length < requiredBanCount) {
+        onToggleDraftBan(match.id, championKey)
+        lastDoubleClickedStepRef.current = step
+        setPreviewChampionKey(null)
+      }
+      return
+    }
+
+    if (step === 3 && !nextBluePickRole) {
+      onNextStep()
+      return
+    }
+
+    if (step === 3 && isLocked) {
+      return
+    }
+
+    if (step === 3 && nextBluePickRole) {
+      onSelectDraftPick(match.id, championKey)
+      lastDoubleClickedStepRef.current = step
+      setPreviewChampionKey(null)
+    }
+  }
+
+  useEffect(() => {
+    if (lastDoubleClickedStepRef.current === step && canGoNext) {
+      lastDoubleClickedStepRef.current = null
+      onNextStep()
+    }
+  }, [canGoNext, step, onNextStep])
+
+  useEffect(() => {
+    if (step === 3 && isWaitingSecondBanPhase) {
+      onNextStep()
+    }
+  }, [step, isWaitingSecondBanPhase, onNextStep])
+
+  useEffect(() => {
+    const shouldAdvanceRedTurn =
+      step === 3 &&
+      !isDraftOrderComplete &&
+      !isWaitingSecondBanPhase &&
+      currentTurn?.side === 'red'
+
+    if (shouldAdvanceRedTurn) {
+      onNextStep()
+    }
+  }, [step, isDraftOrderComplete, isWaitingSecondBanPhase, currentTurn, onNextStep])
+
+  if (!match) {
+    return (
+      <Panel title="Match Day" subtitle="Aucun match aujourd'hui">
+        <p className="text-sm text-[var(--text-soft)]">
+          Aucun match n est programme sur cette date. Tu peux continuer le temps ou verifier le calendrier.
+        </p>
+        <button
+          type="button"
+          onClick={onOpenCalendar}
+          className="mt-3 rounded border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2 text-xs uppercase tracking-[0.08em] text-[var(--text-soft)] hover:border-[var(--accent)]"
+        >
+          Ouvrir le calendrier
+        </button>
+      </Panel>
+    )
+  }
 
   return (
     <div className="absolute inset-0 z-50 flex h-full w-full flex-col bg-[#050505] text-white">
@@ -4835,7 +4879,7 @@ function MatchDayPage({
                            disabled={!canGoNext}
                            className={`rounded px-4 py-1.5 text-xs font-bold uppercase tracking-wider transition-all ${canGoNext ? 'bg-[#c8aa6e] text-black shadow-[0_0_10px_rgba(200,170,110,0.5)] hover:bg-[#d4b982]' : 'cursor-not-allowed bg-gray-800 text-gray-500'}`}
                          >
-                            {step === 3 && isWaitingSecondBanPhase ? 'Passer aux bans 2' : 'Valider la phase'}
+                           Continuer
                          </button>
                        </div>
                      </div>
@@ -4846,32 +4890,20 @@ function MatchDayPage({
                        </div>
                      ) : null}
 
-                     <div className="flex flex-wrap items-center gap-2">
-                       {step === 2 ? (
-                         <select
-                           value={banRoleFilter}
-                           onChange={(event) => setBanRoleFilter(event.target.value)}
-                           className="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs uppercase tracking-wider text-gray-200"
+                     <div className="flex flex-wrap items-center justify-center gap-6 my-2">
+                       <button type="button" onClick={() => setActiveRoleFilter('ALL')} className={`text-xs font-bold uppercase tracking-widest transition-colors ${activeRoleFilter === 'ALL' ? 'text-[#c8aa6e]' : 'text-gray-500 hover:text-gray-300'}`}>
+                         TOUS
+                       </button>
+                       {DRAFT_ROLES.map((role) => (
+                         <button
+                           type="button"
+                           key={`filter-${role}`}
+                           onClick={() => setActiveRoleFilter(role)}
+                           className={`text-xs font-bold uppercase tracking-widest transition-colors ${activeRoleFilter === role ? 'text-[#c8aa6e]' : 'text-gray-500 hover:text-gray-300'}`}
                          >
-                           <option value="ALL">Tous les roles</option>
-                           {DRAFT_ROLES.map((role) => (
-                             <option key={`filter-${role}`} value={role}>{role}</option>
-                           ))}
-                         </select>
-                       ) : null}
-                       <input
-                         type="text"
-                         value={step === 2 ? banSearch : pickSearch}
-                         onChange={(event) => {
-                           if (step === 2) {
-                             setBanSearch(event.target.value)
-                           } else {
-                             setPickSearch(event.target.value)
-                           }
-                         }}
-                         placeholder={step === 2 ? 'Rechercher un ban...' : 'Rechercher un pick...'}
-                         className="min-w-[220px] flex-1 rounded border border-gray-700 bg-gray-900 px-2 py-1 text-xs text-gray-100 placeholder:text-gray-500"
-                       />
+                           {role === 'Top' ? 'TOP' : role === 'Jungle' ? 'JGL' : role === 'Mid' ? 'MID' : role === 'ADC' ? 'ADC' : 'SUP'}
+                         </button>
+                       ))}
                      </div>
                      
                      <div className="h-[40vh] overflow-y-auto pr-2 custom-scrollbar">
@@ -4886,21 +4918,10 @@ function MatchDayPage({
 
                            return (
                              <button 
+                               type="button"
                                key={'opt-'+toChampionKey(champion)} 
-                               disabled={isLocked && step === 3}
-                               onClick={() => {
-                                 if (step === 2) {
-                                   if (selectedBans.includes(toChampionKey(champion))) {
-                                     onToggleDraftBan(match.id, toChampionKey(champion))
-                                   } else if (selectedBans.length < requiredBanCount) {
-                                     onToggleDraftBan(match.id, toChampionKey(champion))
-                                   }
-                                 }
-                                 if (step === 3 && nextBluePickRole) {
-                                   onSelectDraftPick(match.id, nextBluePickRole, toChampionKey(champion))
-                                 }
-                               }}
-                               className={`group relative aspect-square overflow-hidden rounded border transition-all ${isLocked ? 'border-red-900/50 opacity-20 grayscale' : 'border-gray-700 hover:border-[#c8aa6e] hover:scale-105'}`}
+                               onClick={() => handleChampionGridClick(toChampionKey(champion), isLocked)}
+                               className={`group relative aspect-square overflow-hidden rounded border transition-all ${isLocked ? 'border-red-900/50 opacity-20 grayscale' : previewChampionKey === toChampionKey(champion) ? 'border-[#00ffcc] scale-105 z-20 shadow-[0_0_15px_rgba(0,255,204,0.4)]' : 'border-gray-700 hover:border-[#c8aa6e] hover:scale-105'}`}
                              >
                                {img ? <img src={img} className="absolute inset-0 h-full w-full object-cover" /> : null}
                                {isComfort ? <div className="absolute left-0.5 top-0.5 rounded bg-amber-500/85 px-1 py-0.5 text-[7px] xl:text-[8px] font-black uppercase text-black z-10">C</div> : null}
@@ -8053,12 +8074,11 @@ function App() {
         const current = previous[matchId] ?? createEmptyDraftState()
         let nextTurnIndex = current.pickTurnIndex ?? 0
 
-        const canResumeAfterSecondBans =
-          nextTurnIndex >= SECOND_BAN_TRIGGER_PICK_INDEX &&
+        const canAdvanceRedTurns =
           nextTurnIndex < DRAFT_PICK_SEQUENCE.length &&
-          (current.bans?.length ?? 0) >= MAX_DRAFT_BANS
+          DRAFT_PICK_SEQUENCE[nextTurnIndex].side === 'red'
 
-        if (!canResumeAfterSecondBans) {
+        if (!canAdvanceRedTurns) {
           return previous
         }
 
@@ -8066,6 +8086,14 @@ function App() {
         let changed = false
 
         while (nextTurnIndex < DRAFT_PICK_SEQUENCE.length && DRAFT_PICK_SEQUENCE[nextTurnIndex].side === 'red') {
+          const mustPauseForSecondBans =
+            nextTurnIndex >= SECOND_BAN_TRIGGER_PICK_INDEX &&
+            (current.bans?.length ?? 0) < MAX_DRAFT_BANS
+
+          if (mustPauseForSecondBans) {
+            break
+          }
+
           const redTurn = DRAFT_PICK_SEQUENCE[nextTurnIndex]
           nextEnemyPicks = buildEnemyDraftPicks({
             matchId,
@@ -8196,8 +8224,14 @@ function App() {
     })
   }
 
-  const handleSelectDraftPick = (matchId, role, championKey) => {
-    if (!matchId || !role) {
+  const handleSelectDraftPick = (matchId, roleOrChampionKey, maybeChampionKey) => {
+    if (!matchId) {
+      return
+    }
+
+    const requestedRole = maybeChampionKey ? roleOrChampionKey : null
+    const championKey = maybeChampionKey ?? roleOrChampionKey
+    if (!championKey) {
       return
     }
 
@@ -8214,14 +8248,62 @@ function App() {
 
     setMatchDraftById((previous) => {
       const current = previous[matchId] ?? createEmptyDraftState()
-      const pickTurnIndex = current.pickTurnIndex ?? 0
-      const currentTurn = DRAFT_PICK_SEQUENCE[pickTurnIndex]
+      const nextPlayerPicks = { ...current.playerPicks }
+      let nextEnemyPicks = { ...(current.enemyPicks ?? {}) }
+      let nextTurnIndex = current.pickTurnIndex ?? 0
+      let hasAdvancedRedTurn = false
 
-      if (!currentTurn || currentTurn.side !== 'blue' || !currentTurn.roles.includes(role)) {
-        return previous
+      while (nextTurnIndex < DRAFT_PICK_SEQUENCE.length && DRAFT_PICK_SEQUENCE[nextTurnIndex].side === 'red') {
+        const mustPauseForSecondBans =
+          nextTurnIndex >= SECOND_BAN_TRIGGER_PICK_INDEX &&
+          (current.bans?.length ?? 0) < MAX_DRAFT_BANS
+
+        if (mustPauseForSecondBans) {
+          break
+        }
+
+        const redTurn = DRAFT_PICK_SEQUENCE[nextTurnIndex]
+        nextEnemyPicks = buildEnemyDraftPicks({
+          matchId,
+          playerPicks: nextPlayerPicks,
+          bans: current.bans,
+          opponentComfortPool: opponentComfortPoolForMatch,
+          existingEnemyPicks: nextEnemyPicks,
+          rolesToFill: redTurn.roles,
+        })
+        nextTurnIndex += 1
+        hasAdvancedRedTurn = true
       }
 
-      const nextPlayerPicks = { ...current.playerPicks }
+      const currentTurn = DRAFT_PICK_SEQUENCE[nextTurnIndex]
+      const commitProgressOnly = () => {
+        if (!hasAdvancedRedTurn) {
+          return previous
+        }
+
+        return {
+          ...previous,
+          [matchId]: {
+            ...current,
+            enemyPicks: nextEnemyPicks,
+            pickTurnIndex: nextTurnIndex,
+          },
+        }
+      }
+
+      if (!currentTurn || currentTurn.side !== 'blue') {
+        return commitProgressOnly()
+      }
+
+      const role =
+        requestedRole && currentTurn.roles.includes(requestedRole)
+          ? requestedRole
+          : (currentTurn.roles.find((turnRole) => !nextPlayerPicks[turnRole]) ?? currentTurn.roles[0])
+
+      if (!role) {
+        return commitProgressOnly()
+      }
+
       const playerComfortPoolForMatch = buildPlayerComfortPool(effectifAvecBonusTier, rosterProfiles, baseRosterProfiles)
       const enemyBansForMatch = buildEnemyBansFromComfortPool(matchId, playerComfortPoolForMatch, current.bans, current)
       const bannedIdSet = new Set(
@@ -8230,26 +8312,19 @@ function App() {
           .filter(Boolean),
       )
 
-      if (!championKey) {
-        return previous
-      } else {
-        const selectedChampion = getChampionByKey(championKey)
-        if (!selectedChampion || bannedIdSet.has(selectedChampion.id)) {
-          return previous
-        }
-
-        Object.entries(nextPlayerPicks).forEach(([existingRole, existingKey]) => {
-          const existingChampion = getChampionByKey(existingKey)
-          if (existingRole !== role && existingChampion?.id === selectedChampion.id) {
-            delete nextPlayerPicks[existingRole]
-          }
-        })
-
-        nextPlayerPicks[role] = championKey
+      const selectedChampion = getChampionByKey(championKey)
+      if (!selectedChampion || bannedIdSet.has(selectedChampion.id)) {
+        return commitProgressOnly()
       }
 
-      let nextEnemyPicks = { ...(current.enemyPicks ?? {}) }
-      let nextTurnIndex = pickTurnIndex
+      Object.entries(nextPlayerPicks).forEach(([existingRole, existingKey]) => {
+        const existingChampion = getChampionByKey(existingKey)
+        if (existingRole !== role && existingChampion?.id === selectedChampion.id) {
+          delete nextPlayerPicks[existingRole]
+        }
+      })
+
+      nextPlayerPicks[role] = championKey
 
       const isBlueTurnCompleted = currentTurn.roles.every((turnRole) => Boolean(nextPlayerPicks[turnRole]))
 
