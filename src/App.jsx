@@ -4925,7 +4925,7 @@ function MatchDayPage({
                       return (
                         <div key={'blue-'+role} className={`relative flex flex-1 flex-col overflow-hidden border-r border-[#1a1a1a] bg-[#0a0a0c] ${isPickingRow ? 'border-t-4 border-t-[#00ffcc] animate-pulse duration-1000' : 'border-t-4 border-t-transparent'}`}>
                            {champ ? (
-                             <img src={`https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${CHAMPION_IMAGE_ID_OVERRIDES[champ.id] ?? champ.id}_0.jpg`} className="absolute inset-0 h-full w-full object-cover object-top opacity-80 mix-blend-screen" />
+                             <img src={`https://ddragon.leagueoflegends.com/cdn/img/champion/loading/${CHAMPION_IMAGE_ID_OVERRIDES[champ.id] ?? champ.id}_0.jpg`} className="absolute inset-0 h-full w-full object-cover object-center opacity-80 mix-blend-screen" />
                            ) : null}
                            <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent" />
                            <div className="absolute inset-0 bg-gradient-to-r from-black/90 via-black/10 to-transparent w-[30%]" />
@@ -4964,7 +4964,7 @@ function MatchDayPage({
                       return (
                         <div key={'red-'+role} className="relative flex flex-1 flex-col overflow-hidden border-l border-[#1a1a1a] bg-[#0a0a0c] border-t-4 border-t-transparent">
                            {champ ? (
-                             <img src={`https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${CHAMPION_IMAGE_ID_OVERRIDES[champ.id] ?? champ.id}_0.jpg`} className="absolute inset-0 h-full w-full object-cover object-top opacity-80 scale-x-[-1] mix-blend-screen" />
+                             <img src={`https://ddragon.leagueoflegends.com/cdn/img/champion/loading/${CHAMPION_IMAGE_ID_OVERRIDES[champ.id] ?? champ.id}_0.jpg`} className="absolute inset-0 h-full w-full object-cover object-center opacity-80 scale-x-[-1] mix-blend-screen" />
                            ) : null}
                            <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent" />
                            <div className="absolute top-0 right-0 bottom-0 bg-gradient-to-l from-black/90 via-black/10 to-transparent w-[30%]" />
@@ -5006,7 +5006,7 @@ function MatchDayPage({
                         return (
                           <div key={'final-blue-'+role} className="relative flex h-[35vh] w-[180px] flex-col justify-end overflow-hidden rounded-lg border-2 border-blue-900/50 bg-gray-900 shadow-2xl">
                              {champ ? (
-                               <img src={`https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${CHAMPION_IMAGE_ID_OVERRIDES[champ.id] ?? champ.id}_0.jpg`} className="absolute inset-0 h-full w-full object-cover opacity-90 transition-transform duration-1000 hover:scale-105" />
+                               <img src={`https://ddragon.leagueoflegends.com/cdn/img/champion/loading/${CHAMPION_IMAGE_ID_OVERRIDES[champ.id] ?? champ.id}_0.jpg`} className="absolute inset-0 h-full w-full object-cover opacity-90 transition-transform duration-1000 hover:scale-105" />
                              ) : null}
                              <div className="absolute inset-0 bg-gradient-to-t from-black/100 via-black/40 to-transparent" />
                              <div className="relative z-10 p-4 text-center">
