@@ -4666,7 +4666,7 @@ function MatchDayPage({
   return (
     <div className="absolute inset-0 z-50 flex h-full w-full flex-col bg-[#050505] text-white">
         {/* Top Banner */}
-        <div className="flex h-[72px] shrink-0 items-center justify-between border-b border-gray-800 bg-[#0a0a0c] px-6 shadow-md z-20">
+        <div className="flex min-h-[90px] shrink-0 items-center justify-between border-b border-gray-800 bg-[#0a0a0c] px-6 py-2 shadow-md z-20">
           <div className="flex flex-1 items-center gap-6">
             <div className="text-2xl font-bold uppercase tracking-wider text-blue-400">{match.player_team}</div>
             {(step === 2 || step === 3 || step === 4) && (
@@ -4676,7 +4676,7 @@ function MatchDayPage({
                   const champ = CHAMPIONS_DB.find(c => toChampionKey(c) === banKey)
                   const img = champ ? getChampionImageUrl(champ) : null
                   return (
-                    <div key={'bb'+i} className="flex h-10 w-10 items-center justify-center overflow-hidden rounded border border-gray-700 bg-gray-900 border-b-2 border-b-red-600">
+                    <div key={'bb'+i} className="flex h-10 w-10 items-center justify-center overflow-hidden rounded border border-gray-700 bg-gray-900 border-b-2 border-b-blue-500">
                       {img ? (
                         <div className="relative h-full w-full">
                           <img src={img} className="h-full w-full object-cover grayscale brightness-50" />
@@ -4692,7 +4692,7 @@ function MatchDayPage({
             )}
           </div>
 
-          <div className="flex flex-col items-center justify-center -mt-1">
+          <div className="flex flex-col items-center justify-center">
             <div className="text-xl font-bold tracking-[0.1em] text-white">
               {step === 1 ? 'PRE-MATCH BRIEFING' : step === 4 ? 'VERROUILLAGE ROSTER' : 'PHASE DE DRAFT'}
             </div>
@@ -4817,11 +4817,11 @@ function MatchDayPage({
 
         {/* Step 2 & 3: Draft Arena */}
         {(step === 2 || step === 3) ? (
-          <div className="relative flex flex-1 flex-col overflow-hidden bg-[url('https://ddragon.leagueoflegends.com/cdn/img/champion/splash/Aatrox_0.jpg')] bg-cover bg-center before:absolute before:inset-0 before:bg-black/95">
+          <div className="relative flex flex-1 flex-col overflow-hidden bg-[#060b19]">
                 
                 {/* Top Center / Champion Pick Grid */}
-                <div className="relative z-10 flex flex-1 flex-col items-center p-6">
-                   <div className="flex w-full xl:w-[90%] max-w-7xl flex-col gap-3 p-2">
+                <div className="relative z-10 flex flex-1 flex-col items-center p-4">
+                   <div className="flex w-full xl:w-[95%] max-w-[1400px] flex-col gap-2 p-2">
                      
                      <div className="flex items-center justify-between">
                        <span className="text-sm font-bold uppercase tracking-widest text-[#c8aa6e]">
@@ -4874,8 +4874,8 @@ function MatchDayPage({
                        />
                      </div>
                      
-                     <div className="h-[35vh] overflow-y-auto pr-2 custom-scrollbar">
-                       <div className="grid grid-cols-10 sm:grid-cols-12 md:grid-cols-14 xl:grid-cols-16 gap-1 md:gap-2">
+                     <div className="h-[40vh] overflow-y-auto pr-2 custom-scrollbar">
+                       <div className="grid grid-cols-12 sm:grid-cols-14 md:grid-cols-16 xl:grid-cols-20 gap-1.5 md:gap-2">
                          {(step === 2 ? allChampionBanOptions : allChampionPickOptions).map(champion => {
                            const img = getChampionImageUrl(champion)
                            const isComfort = comfortChampionIds.has(champion.id)
@@ -4903,8 +4903,8 @@ function MatchDayPage({
                                className={`group relative aspect-square overflow-hidden rounded border transition-all ${isLocked ? 'border-red-900/50 opacity-20 grayscale' : 'border-gray-700 hover:border-[#c8aa6e] hover:scale-105'}`}
                              >
                                {img ? <img src={img} className="absolute inset-0 h-full w-full object-cover" /> : null}
-                               {isComfort ? <div className="absolute left-1 top-1 rounded bg-amber-500/85 px-1 xl:px-1.5 py-0.5 xl:py-1 text-[8px] xl:text-[10px] font-black uppercase text-black z-10">C</div> : null}
-                               <div className="absolute inset-x-0 bottom-0 bg-black/80 px-1 py-0.5 xl:py-1 text-center text-[8px] xl:text-[10px] font-bold text-white group-hover:text-[#c8aa6e] truncate">{champion.name}</div>
+                               {isComfort ? <div className="absolute left-0.5 top-0.5 rounded bg-amber-500/85 px-1 py-0.5 text-[7px] xl:text-[8px] font-black uppercase text-black z-10">C</div> : null}
+                               <div className="absolute inset-x-0 bottom-0 bg-black/80 px-1 py-0.5 text-center text-[7px] xl:text-[9px] font-bold text-white group-hover:text-[#c8aa6e] truncate">{champion.name}</div>
                              </button>
                            )
                          })}
