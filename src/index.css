@@ -130,3 +130,11 @@ body {
   min-width: 200%;
   animation: processing-scroll 8s linear infinite;
 }
+
+.hide-scrollbar {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}

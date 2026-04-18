@@ -1,9 +1,22 @@
+import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import '@google/model-viewer'
 
 const MotionDiv = motion.div
 
 const ROLES = ['Top', 'Jungle', 'Mid', 'ADC', 'Support']
 const ROLE_INITIAL = { Top: 'T', Jungle: 'J', Mid: 'M', ADC: 'A', Support: 'S' }
+const LOCAL_CHAMPION_DIR = '/champions'
+const LOCAL_SHOWCASE_MODEL = '/shaco_du_pand%C3%A9monium_prestige.glb'
+
+const FALLBACK_MAP_URL = 'https://ddragon.leagueoflegends.com/cdn/16.7.1/img/map/map11.png'
+const MAP_SOURCE_CANDIDATES = [
+  '/custom_map.webp',
+  '/SummonersRift/custom_map.webp',
+  '/SummonersRift/map.webp',
+  FALLBACK_MAP_URL,
+]
+const DEFAULT_WIREFRAME_ASPECT_RATIO = 640 / 425
 
 const CDN = '16.7.1'
 const DDR_OVERRIDES = {
@@ -24,6 +37,67 @@ function getChampionUrl(championId) {
   if (!championId) return null
   const id = DDR_OVERRIDES[championId] ?? championId
   return `https://ddragon.leagueoflegends.com/cdn/${CDN}/img/champion/${id}.png`
+}
+
+function getLocalChampionUrl(championId) {
+  if (!championId) return null
+  const id = DDR_OVERRIDES[championId] ?? championId
+  return `${LOCAL_CHAMPION_DIR}/${id}.png`
+}
+
+function LiveUnitAvatar({ championId, role }) {
+  const fallbackUrl = getChampionUrl(championId)
+  const localUrl = getLocalChampionUrl(championId)
+  const [preferFallback, setPreferFallback] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const source = preferFallback ? fallbackUrl : (localUrl ?? fallbackUrl)
+
+  if (failed || !source) {
+    return <span>{ROLE_INITIAL[role]}</span>
+  }
+
+  return (
+    <img
+      src={source}
+      alt={championId ?? role}
+      className="h-full w-full scale-110 rounded-full object-cover"
+      draggable={false}
+      onError={() => {
+        if (!preferFallback && fallbackUrl) {
+          setPreferFallback(true)
+          return
+        }
+        setFailed(true)
+      }}
+    />
+  )
+}
+
+function ModelShowcase() {
+  const [hidden, setHidden] = useState(false)
+
+  if (hidden) {
+    return null
+  }
+
+  return (
+    <div className="pointer-events-none absolute bottom-2 left-2 z-30 hidden w-[154px] overflow-hidden rounded border border-white/15 bg-black/50 backdrop-blur-sm xl:block">
+      <div className="border-b border-white/10 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.08em] text-slate-300">
+        Modele 3D
+      </div>
+      <model-viewer
+        src={LOCAL_SHOWCASE_MODEL}
+        auto-rotate
+        rotation-per-second="22deg"
+        disable-zoom
+        shadow-intensity="0.8"
+        exposure="1"
+        camera-orbit="38deg 68deg 2.7m"
+        className="h-[106px] w-full bg-gradient-to-br from-slate-900/80 to-black/80"
+        onError={() => setHidden(true)}
+      />
+    </div>
+  )
 }
 
 function clamp(v, min, max) {
@@ -61,39 +135,80 @@ function pointOnPolyline(points, t) {
 const LANE_PATHS = {
   top: [
     { x: 12, y: 86 },
-    { x: 14, y: 70 },
-    { x: 15, y: 52 },
-    { x: 18, y: 32 },
-    { x: 34, y: 16 },
-    { x: 52, y: 14 },
-    { x: 70, y: 14 },
-    { x: 86, y: 12 },
+    { x: 13, y: 72 },
+    { x: 14, y: 60 },
+    { x: 16, y: 50 },
+    { x: 22, y: 36 },
+    { x: 33, y: 18 },
+    { x: 48, y: 14 },
+    { x: 62, y: 13 },
+    { x: 75, y: 12.5 },
+    { x: 88, y: 12 },
   ],
   mid: [
     { x: 22, y: 78 },
-    { x: 30, y: 68 },
-    { x: 38, y: 58 },
-    { x: 50, y: 50 },
-    { x: 62, y: 42 },
-    { x: 70, y: 32 },
-    { x: 78, y: 22 },
+    { x: 30, y: 70 },
+    { x: 38, y: 62 },
+    { x: 46, y: 55 },
+    { x: 54, y: 47 },
+    { x: 62, y: 39 },
+    { x: 70, y: 31 },
+    { x: 78, y: 23 },
   ],
   bot: [
     { x: 34, y: 86 },
-    { x: 50, y: 86 },
-    { x: 66, y: 86 },
-    { x: 82, y: 82 },
-    { x: 86, y: 66 },
-    { x: 86, y: 50 },
-    { x: 86, y: 34 },
-    { x: 88, y: 18 },
+    { x: 48, y: 86 },
+    { x: 62, y: 86 },
+    { x: 74, y: 84 },
+    { x: 82, y: 80 },
+    { x: 84, y: 70 },
+    { x: 84, y: 60 },
+    { x: 84, y: 48 },
+    { x: 84, y: 34 },
+    { x: 85, y: 20 },
+  ],
+}
+
+const POST_LANE_PATHS = {
+  top: [
+    { x: 16, y: 82 },
+    { x: 18, y: 66 },
+    { x: 21, y: 53 },
+    { x: 25, y: 41 },
+    { x: 32, y: 30 },
+    { x: 43, y: 22 },
+    { x: 56, y: 18 },
+    { x: 70, y: 16 },
+    { x: 84, y: 15 },
+  ],
+  mid: [
+    { x: 24, y: 77 },
+    { x: 31, y: 69 },
+    { x: 38, y: 61 },
+    { x: 46, y: 54 },
+    { x: 54, y: 46 },
+    { x: 62, y: 38 },
+    { x: 69, y: 31 },
+    { x: 76, y: 24 },
+  ],
+  bot: [
+    { x: 36, y: 84 },
+    { x: 48, y: 84 },
+    { x: 60, y: 84 },
+    { x: 70, y: 82 },
+    { x: 77, y: 78 },
+    { x: 80, y: 70 },
+    { x: 80, y: 61 },
+    { x: 80, y: 50 },
+    { x: 80, y: 38 },
+    { x: 81, y: 24 },
   ],
 }
 
 const LANE_CLASH_POINTS = {
-  top: { x: 33, y: 17 },
-  mid: { x: 50, y: 50 },
-  bot: { x: 82, y: 67 },
+  top: { x: 42, y: 17 },
+  mid: { x: 50, y: 51 },
+  bot: { x: 83, y: 66 },
 }
 
 const ROLE_LANE = {
@@ -104,10 +219,98 @@ const ROLE_LANE = {
 }
 
 const ROLE_OFFSETS = {
-  Top: { x: -1.2, y: -1.8 },
+  Top: { x: -2.4, y: -1.6 },
   Mid: { x: 0, y: 0 },
-  ADC: { x: 1.5, y: 1.4 },
-  Support: { x: -1.5, y: -1.2 },
+  ADC: { x: 1.3, y: 1.2 },
+  Support: { x: -1.3, y: -1.1 },
+}
+
+const LANE_PHASE_TRACKS = {
+  team: {
+    Top: [
+      { minute: 0, x: 13, y: 82 },
+      { minute: 4, x: 15, y: 63 },
+      { minute: 8, x: 17, y: 49 },
+      { minute: 12, x: 19.5, y: 36 },
+      { minute: 15, x: 21.5, y: 30.5 },
+    ],
+    Mid: [
+      { minute: 0, x: 16, y: 77 },
+      { minute: 4, x: 23, y: 69 },
+      { minute: 8, x: 30, y: 61 },
+      { minute: 12, x: 37, y: 57 },
+      { minute: 15, x: 41, y: 54 },
+    ],
+    ADC: [
+      { minute: 0, x: 26.5, y: 86 },
+      { minute: 4, x: 42.5, y: 85 },
+      { minute: 8, x: 56.5, y: 83 },
+      { minute: 12, x: 66.5, y: 80 },
+      { minute: 15, x: 71, y: 79 },
+    ],
+    Support: [
+      { minute: 0, x: 24.5, y: 86.5 },
+      { minute: 4, x: 40.5, y: 85.5 },
+      { minute: 8, x: 55, y: 84 },
+      { minute: 12, x: 65, y: 81.5 },
+      { minute: 15, x: 73, y: 82 },
+    ],
+  },
+  enemy: {
+    Top: [
+      { minute: 0, x: 87, y: 13 },
+      { minute: 4, x: 73, y: 13 },
+      { minute: 8, x: 59, y: 14 },
+      { minute: 12, x: 45, y: 18 },
+      { minute: 15, x: 33.5, y: 24 },
+    ],
+    Mid: [
+      { minute: 0, x: 69, y: 24 },
+      { minute: 4, x: 61, y: 32 },
+      { minute: 8, x: 53, y: 40 },
+      { minute: 12, x: 47, y: 47 },
+      { minute: 15, x: 44.5, y: 50.5 },
+    ],
+    ADC: [
+      { minute: 0, x: 74.5, y: 22 },
+      { minute: 4, x: 73.5, y: 36 },
+      { minute: 8, x: 73, y: 50 },
+      { minute: 12, x: 72.5, y: 62 },
+      { minute: 15, x: 72, y: 69 },
+    ],
+    Support: [
+      { minute: 0, x: 75.5, y: 18 },
+      { minute: 4, x: 74.5, y: 32 },
+      { minute: 8, x: 74, y: 46 },
+      { minute: 12, x: 73.5, y: 59 },
+      { minute: 15, x: 75, y: 70.5 },
+    ],
+  },
+}
+
+function pointFromMinuteTrack(track, minute) {
+  if (!track?.length) return null
+
+  if (minute <= track[0].minute) {
+    return { x: track[0].x, y: track[0].y }
+  }
+
+  const last = track[track.length - 1]
+  if (minute >= last.minute) {
+    return { x: last.x, y: last.y }
+  }
+
+  for (let i = 0; i < track.length - 1; i += 1) {
+    const from = track[i]
+    const to = track[i + 1]
+    if (minute >= from.minute && minute <= to.minute) {
+      const span = Math.max(1, to.minute - from.minute)
+      const alpha = (minute - from.minute) / span
+      return lerp(from, to, alpha)
+    }
+  }
+
+  return { x: last.x, y: last.y }
 }
 
 const JUNGLE_PATROLS = {
@@ -212,13 +415,32 @@ function getModeFromEvent(event, minute, aggressivite = 50) {
   return 'gank'
 }
 
+function isLanePhase(event, minute) {
+  if (event?.phaseId === 'early') {
+    return true
+  }
+
+  return minute <= 15
+}
+
 function pickGankLane(minute, matchId) {
   const lanes = ['top', 'mid', 'bot']
   return lanes[stableHash(`${matchId}-${minute}-gank`) % lanes.length]
 }
 
 function buildLanePosition({ side, role, laneName, minute, mode, matchId, targetLane }) {
-  const path = LANE_PATHS[laneName] ?? LANE_PATHS.mid
+  const laneTrack = LANE_PHASE_TRACKS?.[side]?.[role]
+  if (mode === 'lane' && laneTrack?.length) {
+    const anchor = pointFromMinuteTrack(laneTrack, minute)
+    const laneJitter = 0.08
+    return {
+      x: anchor.x + (((stableHash(`${matchId}-${side}-${role}-${minute}-track-jx`) % 3) - 1) * laneJitter),
+      y: anchor.y + (((stableHash(`${matchId}-${side}-${role}-${minute}-track-jy`) % 3) - 1) * laneJitter),
+    }
+  }
+
+  const lanePathSet = mode === 'lane' ? LANE_PATHS : POST_LANE_PATHS
+  const path = lanePathSet[laneName] ?? lanePathSet.mid ?? LANE_PATHS.mid
   const progress = clamp(0.18 + (minute * 0.019), 0.18, 0.58)
   const sideProgress = side === 'team' ? progress : 1 - progress
 
@@ -240,7 +462,7 @@ function buildLanePosition({ side, role, laneName, minute, mode, matchId, target
     y: point.y + (side === 'team' ? offset.y : -offset.y),
   }
 
-  const jitter = mode === 'lane' ? 0.45 : 0.65
+  const jitter = mode === 'lane' ? 0.2 : 0.6
   point = {
     x: point.x + (((stableHash(`${matchId}-${side}-${role}-${minute}-jx`) % 5) - 2) * jitter),
     y: point.y + (((stableHash(`${matchId}-${side}-${role}-${minute}-jy`) % 5) - 2) * jitter),
@@ -276,7 +498,7 @@ function buildJunglePosition({ side, minute, mode, targetLane, objective, matchI
   return patrolPoint
 }
 
-function buildAllPositions({ mode, minute, objective, matchId, killEvent }) {
+function buildAllPositions({ mode, minute, objective, matchId, killEvent, lanePhase = false }) {
   const positions = {}
   const seed = matchId ?? 'live-match'
   const targetLane = pickGankLane(minute, seed)
@@ -284,17 +506,19 @@ function buildAllPositions({ mode, minute, objective, matchId, killEvent }) {
   for (const side of ['team', 'enemy']) {
     for (const role of ROLES) {
       let point
+      const laneLocked = lanePhase && role !== 'Jungle'
+      const unitMode = laneLocked ? 'lane' : mode
 
       if (role === 'Jungle') {
         point = buildJunglePosition({
           side,
           minute,
-          mode,
+          mode: unitMode,
           targetLane,
           objective,
           matchId: seed,
         })
-      } else if (mode === 'teamfight') {
+      } else if (unitMode === 'teamfight') {
         const offset = TEAMFIGHT_OFFSETS[role] ?? { x: 0, y: 0 }
         const dir = side === 'team' ? 1 : -1
         point = {
@@ -308,7 +532,7 @@ function buildAllPositions({ mode, minute, objective, matchId, killEvent }) {
           role,
           laneName,
           minute,
-          mode,
+          mode: unitMode,
           matchId: seed,
           targetLane,
         })
@@ -319,7 +543,7 @@ function buildAllPositions({ mode, minute, objective, matchId, killEvent }) {
         y: point.y,
       }
 
-      if (killEvent?.killerRole === role && killEvent?.winnerSide === side) {
+      if (!laneLocked && killEvent?.killerRole === role && killEvent?.winnerSide === side) {
         const dir = side === 'team' ? 1 : -1
         finalPoint = {
           x: finalPoint.x + (4.5 * dir),
@@ -327,9 +551,11 @@ function buildAllPositions({ mode, minute, objective, matchId, killEvent }) {
         }
       }
 
+      const minBound = lanePhase ? 8 : 12
+      const maxBound = lanePhase ? 92 : 88
       positions[`${side}-${role}`] = {
-        x: clamp(finalPoint.x, 6, 94),
-        y: clamp(finalPoint.y, 6, 94),
+        x: clamp(finalPoint.x, minBound, maxBound),
+        y: clamp(finalPoint.y, minBound, maxBound),
       }
     }
   }
@@ -337,7 +563,11 @@ function buildAllPositions({ mode, minute, objective, matchId, killEvent }) {
   return positions
 }
 
-export default function MatchMap({ liveSession, currentIndex, aggressivite = 50 }) {
+export default function MatchMap({ liveSession, currentIndex, aggressivite = 50, variant = 'detailed' }) {
+  const [mapSourceIndex, setMapSourceIndex] = useState(0)
+  const [wireframeAspectRatio, setWireframeAspectRatio] = useState(DEFAULT_WIREFRAME_ASPECT_RATIO)
+  const isWireframe = variant === 'wireframe2d'
+
   const currentEvent = liveSession?.timeline?.[currentIndex] ?? null
   const killEvent = deriveKillEvent(currentEvent)
   const minute = currentEvent?.minute ?? 0
@@ -345,8 +575,9 @@ export default function MatchMap({ liveSession, currentIndex, aggressivite = 50 
 
   const matchId = liveSession?.matchId ?? 'live'
   const mode = getModeFromEvent(currentEvent, minute, aggressivite)
+  const lanePhase = isLanePhase(currentEvent, minute)
   const objective = getObjectiveForMinute(minute)
-  const positions = buildAllPositions({ mode, minute, objective, matchId, killEvent })
+  const positions = buildAllPositions({ mode, minute, objective, matchId, killEvent, lanePhase })
 
   const deadUnitId = killEvent ? `${killEvent.loserSide}-${killEvent.victimRole}` : null
   const teamTowers = currentEvent?.scoreboard?.team?.towers ?? 0
@@ -354,6 +585,7 @@ export default function MatchMap({ liveSession, currentIndex, aggressivite = 50 
 
   const objectiveKey = objectiveKeyFromPosition(objective)
   const obj = { ...objective, ...(OBJECTIVE_LABELS[objectiveKey] ?? OBJECTIVE_LABELS.dragon) }
+  const mapSource = MAP_SOURCE_CANDIDATES[Math.min(mapSourceIndex, MAP_SOURCE_CANDIDATES.length - 1)]
 
   const phaseLabel = mode === 'teamfight' ? '⚔ TEAMFIGHT' : mode === 'gank' ? '↯ GANK' : '— LANING'
   const phaseColor = mode === 'teamfight'
@@ -363,45 +595,67 @@ export default function MatchMap({ liveSession, currentIndex, aggressivite = 50 
       : 'text-slate-300 border-slate-700/40 bg-slate-900/50'
 
   return (
-    <div className="relative aspect-square w-full overflow-hidden rounded-sm border border-[rgba(203,213,225,0.2)] bg-[#08111c]">
+    <div
+      className={`relative w-full overflow-hidden ${isWireframe ? 'rounded-md border border-black/25 bg-[#d9d9d9]' : 'aspect-square rounded-sm border border-[rgba(203,213,225,0.2)] bg-[#08111c]'}`}
+      style={isWireframe ? { aspectRatio: wireframeAspectRatio } : undefined}
+    >
+      {/* Background modifé pour l'image customisée */}
       <img
-        src={`https://ddragon.leagueoflegends.com/cdn/${CDN}/img/map/map11.png`}
-        className="absolute inset-0 h-full w-full object-contain opacity-[0.96]"
+        src={mapSource}
+        className={`absolute inset-0 h-full w-full object-cover ${isWireframe ? 'opacity-[0.9]' : 'opacity-[0.96]'}`}
         alt="Summoners Rift"
         draggable={false}
+        onLoad={(event) => {
+          if (!isWireframe) return
+          const { naturalWidth, naturalHeight } = event.currentTarget
+          if (!naturalWidth || !naturalHeight) return
+          setWireframeAspectRatio(naturalWidth / naturalHeight)
+        }}
+        onError={() => {
+          setMapSourceIndex((current) => Math.min(current + 1, MAP_SOURCE_CANDIDATES.length - 1))
+        }}
       />
 
-      <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-black/16 via-transparent to-black/26" />
+      <div className={`pointer-events-none absolute inset-0 ${isWireframe ? 'bg-gradient-to-br from-black/5 via-transparent to-black/10' : 'bg-gradient-to-br from-black/16 via-transparent to-black/26'}`} />
 
       <svg viewBox="0 0 100 100" className="absolute inset-0 h-full w-full pointer-events-none">
-        {/* Draw subtle grid lines or lanes */}
-        
-        {/* Highlight objective circles */}
-        <circle cx={obj.x} cy={obj.y} r="8" fill={obj.glow} stroke={obj.color} strokeWidth="0.4" opacity="0.6" />
-        
-        {/* Towers as glowing pillars */}
-        {BLUE_TOWERS.map((t, i) => {
-          const dead = i < enemyTowers;
-          return (
-            <g key={t.id} className="transition-all duration-700">
-              <ellipse cx={t.x} cy={t.y+1} rx="2.5" ry="1.5" fill="rgba(0,0,0,0.5)" />
-              <rect x={t.x-1.5} y={t.y-3} width="3" height="4" fill={dead ? '#334155' : '#1e3a8a'} stroke={dead ? '#475569' : '#3b82f6'} strokeWidth="0.3" />
-              <circle cx={t.x} cy={t.y-3} r="1.5" fill={dead ? '#475569' : '#60a5fa'} />
-            </g>
-          )
-        })}
-        
-        {RED_TOWERS.map((t, i) => {
-          const dead = i < teamTowers;
-          return (
-            <g key={t.id} className="transition-all duration-700">
-              <ellipse cx={t.x} cy={t.y+1} rx="2.5" ry="1.5" fill="rgba(0,0,0,0.5)" />
-              <rect x={t.x-1.5} y={t.y-3} width="3" height="4" fill={dead ? '#450a0a' : '#7f1d1d'} stroke={dead ? '#7f1d1d' : '#ef4444'} strokeWidth="0.3" />
-              <circle cx={t.x} cy={t.y-3} r="1.5" fill={dead ? '#7f1d1d' : '#f87171'} />
-            </g>
-          )
-        })}
+        {!isWireframe ? (
+          <>
+            {/* Highlight objective circles */}
+            <circle cx={obj.x} cy={obj.y} r="8" fill={obj.glow} stroke={obj.color} strokeWidth="0.4" opacity="0.6" />
+
+            {/* Towers as glowing pillars */}
+            {BLUE_TOWERS.map((t, i) => {
+              const dead = i < enemyTowers
+              return (
+                <g key={t.id} className="transition-all duration-700">
+                  <ellipse cx={t.x} cy={t.y + 1} rx="2.5" ry="1.5" fill="rgba(0,0,0,0.5)" />
+                  <rect x={t.x - 1.5} y={t.y - 3} width="3" height="4" fill={dead ? '#334155' : '#1e3a8a'} stroke={dead ? '#475569' : '#3b82f6'} strokeWidth="0.3" />
+                  <circle cx={t.x} cy={t.y - 3} r="1.5" fill={dead ? '#475569' : '#60a5fa'} />
+                </g>
+              )
+            })}
+
+            {RED_TOWERS.map((t, i) => {
+              const dead = i < teamTowers
+              return (
+                <g key={t.id} className="transition-all duration-700">
+                  <ellipse cx={t.x} cy={t.y + 1} rx="2.5" ry="1.5" fill="rgba(0,0,0,0.5)" />
+                  <rect x={t.x - 1.5} y={t.y - 3} width="3" height="4" fill={dead ? '#450a0a' : '#7f1d1d'} stroke={dead ? '#7f1d1d' : '#ef4444'} strokeWidth="0.3" />
+                  <circle cx={t.x} cy={t.y - 3} r="1.5" fill={dead ? '#7f1d1d' : '#f87171'} />
+                </g>
+              )
+            })}
+          </>
+        ) : (
+          <>
+            <circle cx="70" cy="72" r="2.4" fill="rgba(16,185,129,0.45)" stroke="rgba(6,78,59,0.7)" strokeWidth="0.5" />
+            <circle cx="30" cy="28" r="2.4" fill="rgba(139,92,246,0.42)" stroke="rgba(76,29,149,0.7)" strokeWidth="0.5" />
+          </>
+        )}
       </svg>
+
+      {!isWireframe ? <ModelShowcase /> : null}
 
       {['team', 'enemy'].flatMap((side) =>
         ROLES.map((role) => {
@@ -416,12 +670,23 @@ export default function MatchMap({ liveSession, currentIndex, aggressivite = 50 
             ? liveSession?.draftState?.playerPicks?.[role]
             : liveSession?.draftState?.enemyPicks?.[role]
           const championId = championKey?.split('-')[0] ?? null
-          const imgUrl = getChampionUrl(championId)
 
           const ringClass = isBlue
             ? 'border-blue-400 shadow-[0_0_10px_rgba(59,130,246,0.85),0_0_20px_rgba(59,130,246,0.4)]'
             : 'border-red-400 shadow-[0_0_10px_rgba(239,68,68,0.85),0_0_20px_rgba(239,68,68,0.4)]'
           const bgClass = isBlue ? 'bg-blue-900' : 'bg-red-900'
+
+          if (isWireframe) {
+            return (
+              <MotionDiv
+                key={unitId}
+                className={`absolute z-20 h-4 w-4 rounded-full border ${isBlue ? 'border-blue-100 bg-blue-500 shadow-[0_0_8px_rgba(37,99,235,0.75)]' : 'border-red-100 bg-red-500 shadow-[0_0_8px_rgba(220,38,38,0.75)]'} ${isKillerUnit ? 'scale-125' : ''}`}
+                animate={{ left: `${pos.x}%`, top: `${pos.y}%` }}
+                transition={{ left: { type: 'tween', duration: 1.15, ease: 'easeOut' }, top: { type: 'tween', duration: 1.15, ease: 'easeOut' } }}
+                style={{ transform: 'translate(-50%, -50%)' }}
+              />
+            )
+          }
 
           return (
             <MotionDiv
@@ -431,11 +696,7 @@ export default function MatchMap({ liveSession, currentIndex, aggressivite = 50 
               transition={{ left: { type: 'tween', duration: 1.15, ease: 'easeOut' }, top: { type: 'tween', duration: 1.15, ease: 'easeOut' } }}
               style={{ transform: 'translate(-50%, -50%)' }}
             >
-              {imgUrl ? (
-                <img src={imgUrl} alt={championId ?? role} className="h-full w-full scale-110 rounded-full object-cover" draggable={false} />
-              ) : (
-                <span>{ROLE_INITIAL[role]}</span>
-              )}
+              <LiveUnitAvatar key={`${unitId}-${championId ?? role}`} championId={championId} role={role} />
 
               <AnimatePresence>
                 {isKillerUnit && (
@@ -454,24 +715,28 @@ export default function MatchMap({ liveSession, currentIndex, aggressivite = 50 
         }),
       )}
 
-      <div className="pointer-events-none absolute bottom-0 left-0 right-0 flex items-center justify-center pb-1">
-        <div className="flex items-center gap-2 rounded border border-slate-700/40 bg-black/60 px-3 py-0.5 text-[9px] backdrop-blur-sm">
-          <span className="font-bold text-blue-400">{goldDiff >= 0 ? `+${(goldDiff / 1000).toFixed(1)}K` : ''}</span>
-          <div className="h-1 w-24 overflow-hidden rounded bg-slate-700">
-            <div
-              className={`h-1 rounded transition-all duration-700 ${goldDiff >= 0 ? 'bg-blue-500' : 'bg-red-500'}`}
-              style={{ width: `${clamp(50 + (goldDiff / 8000) * 50, 5, 95)}%`, marginLeft: goldDiff >= 0 ? 0 : 'auto' }}
-            />
+      {!isWireframe ? (
+        <div className="pointer-events-none absolute bottom-0 left-0 right-0 flex items-center justify-center pb-1">
+          <div className="flex items-center gap-2 rounded border border-slate-700/40 bg-black/60 px-3 py-0.5 text-[9px] backdrop-blur-sm">
+            <span className="font-bold text-blue-400">{goldDiff >= 0 ? `+${(goldDiff / 1000).toFixed(1)}K` : ''}</span>
+            <div className="h-1 w-24 overflow-hidden rounded bg-slate-700">
+              <div
+                className={`h-1 rounded transition-all duration-700 ${goldDiff >= 0 ? 'bg-blue-500' : 'bg-red-500'}`}
+                style={{ width: `${clamp(50 + (goldDiff / 8000) * 50, 5, 95)}%`, marginLeft: goldDiff >= 0 ? 0 : 'auto' }}
+              />
+            </div>
+            <span className="font-bold text-red-400">{goldDiff < 0 ? `+${(Math.abs(goldDiff) / 1000).toFixed(1)}K` : ''}</span>
           </div>
-          <span className="font-bold text-red-400">{goldDiff < 0 ? `+${(Math.abs(goldDiff) / 1000).toFixed(1)}K` : ''}</span>
         </div>
-      </div>
+      ) : null}
 
-      <div className={`pointer-events-none absolute left-2 top-2 rounded border px-2 py-0.5 text-[9px] font-bold tracking-[0.1em] backdrop-blur-sm ${phaseColor}`}>
-        {phaseLabel}
-      </div>
+      {!isWireframe ? (
+        <div className={`pointer-events-none absolute left-2 top-2 rounded border px-2 py-0.5 text-[9px] font-bold tracking-[0.1em] backdrop-blur-sm ${phaseColor}`}>
+          {phaseLabel}
+        </div>
+      ) : null}
 
-      <div className="pointer-events-none absolute right-2 top-2 rounded border border-slate-700/50 bg-black/60 px-2 py-0.5 text-[10px] font-mono font-bold text-white backdrop-blur-sm">
+      <div className={`pointer-events-none absolute right-2 top-2 rounded border px-2 py-0.5 text-[10px] font-mono font-bold backdrop-blur-sm ${isWireframe ? 'border-black/30 bg-white/75 text-[#1f2937]' : 'border-slate-700/50 bg-black/60 text-white'}`}>
         {String(minute).padStart(2, '0')}:00
       </div>
     </div>

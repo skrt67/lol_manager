@@ -1666,7 +1666,7 @@ function getChampionImageUrl(champion) {
   return `https://ddragon.leagueoflegends.com/cdn/${CHAMPION_IMAGE_CDN_VERSION}/img/champion/${ddragonId}.png`
 }
 
-function getItemImageUrl(itemLabel) {
+function _getItemImageUrl(itemLabel) {
   const itemId = ITEM_IMAGE_ID_BY_LABEL[itemLabel]
   if (!itemId) {
     return null
@@ -4817,35 +4817,15 @@ function MatchDayPage({
 
         {/* Step 2 & 3: Draft Arena */}
         {(step === 2 || step === 3) ? (
-          <div className="relative flex flex-1 overflow-hidden bg-[url('https://ddragon.leagueoflegends.com/cdn/img/champion/splash/Aatrox_0.jpg')] bg-cover bg-center before:absolute before:inset-0 before:bg-black/95">
-                {/* Left Side (Blue) */}
-                <div className="relative z-10 flex w-[260px] md:w-[300px] xl:w-[350px] flex-col justify-around bg-gradient-to-r from-black/100 via-black/80 to-transparent p-4">
-                  {DRAFT_ROLES.map(role => {
-                    const champKey = playerPicks[role]
-                    const champ = CHAMPIONS_DB.find(c => toChampionKey(c) === champKey)
-                    const isPickingRow = step === 3 && currentBlueRoles.includes(role)
-                    return (
-                      <div key={'blue-'+role} className={`relative flex h-[15vh] overflow-hidden rounded-md border-2 ${isPickingRow ? 'border-[#c8aa6e] shadow-[0_0_15px_rgba(200,170,110,0.6)] animate-pulse' : 'border-blue-900/40 bg-gray-900/40'}`}>
-                         {champ ? (
-                           <img src={`https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${CHAMPION_IMAGE_ID_OVERRIDES[champ.id] ?? champ.id}_0.jpg`} className="absolute inset-0 h-full w-full object-cover opacity-80 mix-blend-screen" />
-                         ) : null}
-                         <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent" />
-                         <div className="absolute bottom-2 left-3">
-                           <div className="text-[10px] font-bold uppercase tracking-widest text-[#c8aa6e] drop-shadow-md">{role}</div>
-                           <div className="text-lg font-black text-white drop-shadow-md">{champ ? champ.name : (isPickingRow ? 'SÉLECTION...' : 'EN ATTENTE')}</div>
-                         </div>
-                      </div>
-                    )
-                  })}
-                </div>
-
-                {/* Center / Roster Select */}
-                <div className="relative z-10 flex flex-1 flex-col items-center justify-end pb-6">
-                   <div className="flex w-[90%] xl:w-[85%] flex-col gap-3 rounded-xl border border-gray-800 bg-black/80 p-5 shadow-2xl backdrop-blur-md">
+          <div className="relative flex flex-1 flex-col overflow-hidden bg-[url('https://ddragon.leagueoflegends.com/cdn/img/champion/splash/Aatrox_0.jpg')] bg-cover bg-center before:absolute before:inset-0 before:bg-black/95">
+                
+                {/* Top Center / Champion Pick Grid */}
+                <div className="relative z-10 flex flex-1 flex-col items-center p-6">
+                   <div className="flex w-full xl:w-[90%] max-w-7xl flex-col gap-3 p-2">
                      
                      <div className="flex items-center justify-between">
                        <span className="text-sm font-bold uppercase tracking-widest text-[#c8aa6e]">
-                        {step === 2 ? 'Phase de Bannissement' : (currentBlueRoles.length > 0 ? `À vous ! (${currentBlueRoles.join(', ')})` : 'Tour Adversaire')}
+                        {step === 2 ? 'Phase de Bannissement' : (currentBlueRoles.length > 0 ? `À vous ! (${currentBlueRoles.join(', ')})` : '')}
                        </span>
                        <div className="flex gap-3">
                          <button type="button" onClick={onPrevStep} className="text-xs uppercase text-gray-400 hover:text-white transition-colors">Retour</button>
@@ -4894,8 +4874,8 @@ function MatchDayPage({
                        />
                      </div>
                      
-                     <div className="h-[30vh] overflow-y-auto pr-2 custom-scrollbar">
-                       <div className="grid grid-cols-6 sm:grid-cols-8 xl:grid-cols-10 gap-2 xl:gap-3">
+                     <div className="h-[35vh] overflow-y-auto pr-2 custom-scrollbar">
+                       <div className="grid grid-cols-10 sm:grid-cols-12 md:grid-cols-14 xl:grid-cols-16 gap-1 md:gap-2">
                          {(step === 2 ? allChampionBanOptions : allChampionPickOptions).map(champion => {
                            const img = getChampionImageUrl(champion)
                            const isComfort = comfortChampionIds.has(champion.id)
@@ -4933,24 +4913,77 @@ function MatchDayPage({
                    </div>
                 </div>
 
-                {/* Right Side (Red) */}
-                <div className="relative z-10 flex w-[260px] md:w-[300px] xl:w-[350px] flex-col justify-around bg-gradient-to-l from-black/100 via-black/80 to-transparent p-4">
-                  {DRAFT_ROLES.map(role => {
-                    const champKey = enemyPicks[role]
-                    const champ = CHAMPIONS_DB.find(c => toChampionKey(c) === champKey)
-                    return (
-                      <div key={'red-'+role} className={`relative flex h-[15vh] overflow-hidden rounded-md border-2 border-red-900/40 bg-gray-900/40`}>
-                         {champ ? (
-                           <img src={`https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${CHAMPION_IMAGE_ID_OVERRIDES[champ.id] ?? champ.id}_0.jpg`} className="absolute inset-0 h-full w-full object-cover opacity-80 mix-blend-screen scale-x-[-1]" />
-                         ) : null}
-                         <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent" />
-                         <div className="absolute bottom-2 right-3 text-right">
-                           <div className="text-[10px] font-bold uppercase tracking-widest text-red-500 drop-shadow-md">{role}</div>
-                           <div className="text-lg font-black text-white drop-shadow-md">{champ ? champ.name : 'EN ATTENTE'}</div>
-                         </div>
-                      </div>
-                    )
-                  })}
+                {/* Bottom Horizontal Roster Bar */}
+                <div className="relative z-20 flex h-[280px] w-full bg-black border-t-2 border-[#1a1a1a] shadow-[0_-10px_40px_rgba(0,0,0,0.8)]">
+                  
+                  {/* Left Side (Blue) */}
+                  <div className="flex flex-1">
+                    {DRAFT_ROLES.map(role => {
+                      const champKey = playerPicks[role]
+                      const champ = CHAMPIONS_DB.find(c => toChampionKey(c) === champKey)
+                      const isPickingRow = step === 3 && currentBlueRoles.includes(role)
+                      return (
+                        <div key={'blue-'+role} className={`relative flex flex-1 flex-col overflow-hidden border-r border-[#1a1a1a] bg-[#0a0a0c] ${isPickingRow ? 'border-t-4 border-t-[#00ffcc] animate-pulse duration-1000' : 'border-t-4 border-t-transparent'}`}>
+                           {champ ? (
+                             <img src={`https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${CHAMPION_IMAGE_ID_OVERRIDES[champ.id] ?? champ.id}_0.jpg`} className="absolute inset-0 h-full w-full object-cover object-top opacity-80 mix-blend-screen" />
+                           ) : null}
+                           <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent" />
+                           <div className="absolute inset-0 bg-gradient-to-r from-black/90 via-black/10 to-transparent w-[30%]" />
+                           
+                           {/* Normal Champion name at bottom */}
+                           <div className="absolute left-0 right-0 bottom-4 text-center text-[10px] md:text-sm font-black uppercase tracking-wider text-white drop-shadow-[0_2px_4px_rgba(0,0,0,1)]">
+                             {champ ? champ.name : ''}
+                           </div>
+
+                           {/* Rotated Role Text aligned strictly to left */}
+                           <div className="absolute left-1 top-4 bottom-4 flex items-center justify-center w-6">
+                             <div className="-rotate-90 text-[10px] sm:text-[11px] font-black uppercase tracking-widest text-[#00ffcc] drop-shadow-[0_2px_2px_rgba(0,0,0,1)] whitespace-nowrap">
+                               {role}
+                             </div>
+                           </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  {/* Center Panel (Logos & Match Info) */}
+                  <div className="flex w-[200px] xl:w-[260px] flex-col items-center justify-center border-x border-[#1a1a1a] bg-[#050505] p-4 relative z-30">
+                     <div className="text-xs font-bold text-gray-500 mb-6 uppercase tracking-widest">PATCH 26.3</div>
+                     <div className="flex w-full items-center justify-center gap-6">
+                       <div className="text-4xl font-black text-white drop-shadow-[0_0_10px_rgba(255,255,255,0.5)]">{(match?.player_team || '???').substring(0, 3).toUpperCase()}</div>
+                       <img src="https://lol.fandom.com/load.php?lang=en&ext=fandom&mw=1&url=https%3A%2F%2Fgamepedia.cursecdn.com%2Flolesports_gamepedia_en%2Fa%2Fa5%2FVS_Icon.png%3Fversion%3D307dc5fc1b6f00ab39bcf72c3b88d8b6" className="h-8 opacity-50" onError={(e) => e.target.style.display='none'} alt="VS"/>
+                       <div className="text-4xl font-black text-white drop-shadow-[0_0_10px_rgba(255,255,255,0.5)]">{(match?.opponent || '???').substring(0, 3).toUpperCase()}</div>
+                     </div>
+                  </div>
+
+                  {/* Right Side (Red) */}
+                  <div className="flex flex-1">
+                    {DRAFT_ROLES.map(role => {
+                      const champKey = enemyPicks[role]
+                      const champ = CHAMPIONS_DB.find(c => toChampionKey(c) === champKey)
+                      return (
+                        <div key={'red-'+role} className="relative flex flex-1 flex-col overflow-hidden border-l border-[#1a1a1a] bg-[#0a0a0c] border-t-4 border-t-transparent">
+                           {champ ? (
+                             <img src={`https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${CHAMPION_IMAGE_ID_OVERRIDES[champ.id] ?? champ.id}_0.jpg`} className="absolute inset-0 h-full w-full object-cover object-top opacity-80 scale-x-[-1] mix-blend-screen" />
+                           ) : null}
+                           <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent" />
+                           <div className="absolute top-0 right-0 bottom-0 bg-gradient-to-l from-black/90 via-black/10 to-transparent w-[30%]" />
+                           
+                           {/* Normal Champion name at bottom */}
+                           <div className="absolute left-0 right-0 bottom-4 text-center text-[10px] md:text-sm font-black uppercase tracking-wider text-white drop-shadow-[0_2px_4px_rgba(0,0,0,1)]">
+                             {champ ? champ.name : ''}
+                           </div>
+
+                           {/* Rotated Role Text aligned strictly to right */}
+                           <div className="absolute right-1 top-4 bottom-4 flex items-center justify-center w-6">
+                             <div className="rotate-90 text-[10px] sm:text-[11px] font-black uppercase tracking-widest text-[#ff3333] drop-shadow-[0_2px_2px_rgba(0,0,0,1)] whitespace-nowrap">
+                               {role}
+                             </div>
+                           </div>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
           </div>
         ) : null}
@@ -5281,149 +5314,121 @@ function MatchLivePage({
   }
 
   return (
-    <div className="flex flex-1 w-full flex-col bg-[#050505] text-white">
-      {/* Top Banner (Scoreboard) */}
-      <div className="flex h-[72px] shrink-0 items-center justify-between border-b border-gray-800 bg-[#0a0a0c] px-6 shadow-md">
-        {/* Left Team (Blue) */}
-        <div className="flex items-center gap-6">
-          <div className="text-2xl font-bold uppercase tracking-wider text-blue-400">{liveSession.teamName}</div>
-          <div className="flex items-center gap-4 text-sm font-semibold uppercase tracking-widest text-blue-200/80">
-            <span title="Kills" className="flex items-center gap-1.5"><div className="h-2 w-2 rounded-full bg-blue-500" /> {scoreboard.team.kills} KL</span>
-            <span title="Towers" className="flex items-center gap-1.5"><div className="h-2 w-2 rounded-full bg-blue-400" /> {scoreboard.team.towers} TW</span>
-            <span title="Dragons" className="flex items-center gap-1.5"><div className="h-2 w-2 rounded-full bg-blue-300" /> {scoreboard.team.dragons} DR</span>
-            <span title="Gold" className="flex items-center gap-1.5"><div className="h-2 w-2 rounded-full bg-yellow-400" /> {(scoreboard.team.gold / 1000).toFixed(1)}K</span>
+    <div className="flex w-full flex-1 flex-col bg-[#d9d9d9] text-[#1f2937]">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b-2 border-black/35 px-5 py-3">
+        <div className="flex items-center gap-3">
+          <span className="rounded-lg border-2 border-black/70 bg-white/90 px-3 py-1.5 text-xs font-bold uppercase tracking-[0.08em]">
+            {liveSession.teamName}
+          </span>
+          <span className="text-xs font-semibold uppercase tracking-[0.1em] text-[#1d4ed8]">
+            {scoreboard.team.kills} K · {scoreboard.team.towers} T · {scoreboard.team.dragons} D
+          </span>
+          <span className="text-xs font-mono text-[#475569]">{(scoreboard.team.gold / 1000).toFixed(1)}k</span>
+        </div>
+
+        <div className="flex flex-col items-center">
+          <div className="text-xl font-black tracking-[0.15em]">{String(liveMinute).padStart(2, '0')}:00</div>
+          <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#4b5563]">
+            {isFinished ? 'Fin de match' : isAutoPaused ? 'Pause' : 'Live'}
           </div>
         </div>
 
-        {/* Center: Match Time & State */}
-        <div className="flex flex-col items-center justify-center">
-          <div className="text-2xl font-bold tracking-[0.15em] text-white">{String(liveMinute).padStart(2, '0')}:00</div>
-          <div className="mt-1 flex gap-2 text-[10px] uppercase tracking-widest text-gray-500">
-            <span>Gold Var: <span className={(currentEvent?.goldDiff ?? 0) >= 0 ? 'text-blue-400' : 'text-red-400'}>{(currentEvent?.goldDiff ?? 0) > 0 ? '+' : ''}{Math.round((currentEvent?.goldDiff ?? 0)/1000 * 10)/10}K</span></span>
-            <span>•</span>
-            <span className="text-cyan-400">{isFinished ? 'FIN' : isAutoPaused ? 'PAUSE' : 'LIVE'}</span>
-          </div>
-          {killAnnouncement ? (
-            <div
-              className={`mt-1.5 flex items-center gap-2 rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.1em] ${
-                killAnnouncement.winnerSide === 'team'
-                  ? 'border-blue-400/60 bg-blue-500/20 text-blue-100'
-                  : 'border-red-400/60 bg-red-500/20 text-red-100'
-              }`}
-            >
-              <span className="rounded bg-black/40 px-1.5 py-0.5 text-[9px] font-black">Kill</span>
-              <span>{killAnnouncement.killerName} ({killAnnouncement.killerChampion})</span>
-              <span className="text-white/60">{'>'}</span>
-              <span>{killAnnouncement.victimName} ({killAnnouncement.victimChampion})</span>
-            </div>
-          ) : null}
-        </div>
-
-        {/* Right Team (Red) */}
-        <div className="flex items-center gap-6 text-right relative group">
-          <div className="flex items-center gap-4 text-sm font-semibold uppercase tracking-widest text-red-200/80">
-            <span title="Gold" className="flex items-center gap-1.5">{(scoreboard.enemy.gold / 1000).toFixed(1)}K <div className="h-2 w-2 rounded-full bg-yellow-400" /></span>
-            <span title="Dragons" className="flex items-center gap-1.5">{scoreboard.enemy.dragons} DR <div className="h-2 w-2 rounded-full bg-red-300" /></span>
-            <span title="Towers" className="flex items-center gap-1.5">{scoreboard.enemy.towers} TW <div className="h-2 w-2 rounded-full bg-red-400" /></span>
-            <span title="Kills" className="flex items-center gap-1.5">{scoreboard.enemy.kills} KL <div className="h-2 w-2 rounded-full bg-red-500" /></span>
-          </div>
-          <div className="text-2xl font-bold uppercase tracking-wider text-red-500">{liveSession.opponentName}</div>
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-mono text-[#475569]">{(scoreboard.enemy.gold / 1000).toFixed(1)}k</span>
+          <span className="text-xs font-semibold uppercase tracking-[0.1em] text-[#b91c1c]">
+            {scoreboard.enemy.kills} K · {scoreboard.enemy.towers} T · {scoreboard.enemy.dragons} D
+          </span>
+          <span className="rounded-lg border-2 border-black/70 bg-white/90 px-3 py-1.5 text-xs font-bold uppercase tracking-[0.08em]">
+            {liveSession.opponentName}
+          </span>
         </div>
       </div>
 
-      {/* Main Content Area */}
-      <div className="relative flex flex-1 overflow-hidden bg-[#050505]">
-        
-        {/* Left Sidebar - Blue Team Stats */}
-        <div className="relative z-10 flex w-[320px] shrink-0 flex-col border-r border-gray-800/60 bg-gradient-to-r from-[#030d1a]/80 to-transparent p-4">
-          <div className="flex flex-1 flex-col justify-around gap-2">
+      {killAnnouncement ? (
+        <div className="px-5 pt-3">
+          <div className={`mx-auto flex w-fit items-center gap-2 rounded-lg border-2 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] ${killAnnouncement.winnerSide === 'team' ? 'border-[#1d4ed8]/50 bg-[#dbeafe]' : 'border-[#b91c1c]/50 bg-[#fee2e2]'}`}>
+            <span>Kill</span>
+            <span>{killAnnouncement.killerName}</span>
+            <span>{'>'}</span>
+            <span>{killAnnouncement.victimName}</span>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="grid min-h-0 flex-1 gap-5 px-5 py-5 xl:grid-cols-[280px_minmax(0,1fr)_280px]">
+        <div className="flex min-h-0 flex-col gap-3">
+          <div className="mx-auto h-12 w-12 rotate-45 rounded-xl border-2 border-black/75 bg-white/75" />
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
             {teamLiveRows.map((row) => (
-              <div key={`blue-${row.role}`} className="flex flex-col gap-1 rounded-sm border-l-2 border-blue-500 bg-blue-950/30 p-2 shadow backdrop-blur-sm">
-                <div className="flex items-end justify-between">
-                  <span className="text-xs font-bold uppercase tracking-wider text-blue-200">{row.playerName}</span>
-                  <span className="text-[10px] uppercase text-blue-400/80">{row.role}</span>
-                </div>
-                <div className="flex items-center justify-between text-sm">
-                  <div className="font-semibold text-white">{row.championName}</div>
-                  <div className="flex gap-3 text-xs font-mono text-gray-300">
-                    <span className="text-white">{row.kills} K</span>
-                    <span>{row.farm} CS</span>
-                  </div>
-                </div>
-                <div className="mt-1 flex items-center gap-1">
-                  {row.items.length ? row.items.map((itemName, index) => {
-                    const itemImageUrl = getItemImageUrl(itemName)
-
-                    if (!itemImageUrl) {
-                      return (
-                        <span
-                          key={`${row.role}-item-fallback-${index}`}
-                          className="flex h-5 w-5 items-center justify-center rounded border border-[var(--border-soft)] bg-black/40 text-[9px] font-bold uppercase text-gray-300"
-                          title={itemName}
-                        >
-                          {itemName.slice(0, 2)}
-                        </span>
-                      )
-                    }
-
-                    return (
-                      <img
-                        key={`${row.role}-item-${itemName}-${index}`}
-                        src={itemImageUrl}
-                        alt={itemName}
-                        title={itemName}
-                        className="h-5 w-5 rounded border border-[var(--border-soft)] bg-black/30 object-cover"
-                        loading="lazy"
-                      />
-                    )
-                  }) : (
-                    <span className="text-[10px] text-gray-500">-</span>
-                  )}
-                </div>
+              <div key={`blue-${row.role}`} className="rounded-2xl border-2 border-black/70 bg-white/85 px-4 py-3 shadow-sm">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#1d4ed8]">{row.role}</p>
+                <p className="mt-1 truncate text-sm font-bold text-[#111827]">{row.playerName}</p>
+                <p className="truncate text-xs text-[#374151]">{row.championName}</p>
+                <p className="mt-1 text-[11px] font-mono text-[#4b5563]">{row.kills}K · {row.farm}CS</p>
               </div>
             ))}
           </div>
         </div>
 
-        {/* Center Canvas - Map & Timeline */}
-        <div className="relative z-10 flex flex-1 flex-col items-center justify-center p-8 pb-32">
-          <div className="relative flex aspect-square h-[55vh] max-h-[700px] w-[55vh] max-w-[700px] items-center justify-center overflow-visible rounded-xl border-4 border-gray-800/80 shadow-[0_0_40px_rgba(0,0,0,0.5)] backdrop-blur-sm">
-             <MatchMap
-              liveSession={liveSession}
-              currentIndex={currentIndex}
-              focusRole={liveSession.focusRole}
-            />
-          </div>
+        <div className="relative min-h-0 border-x-2 border-black/70 px-4">
+          <div className="mx-auto flex h-full max-w-[920px] flex-col items-center justify-center gap-4">
+            <div className="w-full max-w-[860px]">
+              <MatchMap
+                liveSession={liveSession}
+                currentIndex={currentIndex}
+                aggressivite={58}
+                variant="wireframe2d"
+              />
+            </div>
 
-          {/* Timeline events ticker */}
-          <div className="absolute bottom-2 left-0 right-0 mx-auto w-full max-w-2xl px-4">
-            <div className="flex flex-col gap-2 rounded-lg border border-gray-800/60 bg-black/60 p-4 shadow-2xl backdrop-blur-md">
-              <div className="flex items-center justify-between border-b border-gray-800/80 pb-2">
-                <span className="text-[10px] font-bold uppercase tracking-widest text-[#c8aa6e]">Play by Play</span>
-                
-                {/* Control Panel inside the ticker */}
-                <div className="flex items-center gap-3">
-                  {!isFinished && (
-                    <div className="flex items-center gap-1.5 text-[10px]">
-                      {[1, 2, 4].map(s => (
-                        <button key={'s'+s} type="button" onClick={() => setAutoSpeedMultiplier(s)} className={`px-1.5 py-0.5 rounded ${autoSpeedMultiplier === s ? 'bg-[#c8aa6e] text-black font-bold' : 'text-gray-400 hover:text-white'}`}>x{s}</button>
+            <div className="w-full max-w-[860px] rounded-xl border-2 border-black/70 bg-white/80 px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#374151]">Play by Play</span>
+                <div className="flex items-center gap-2 text-[11px] font-semibold">
+                  {!isFinished ? (
+                    <>
+                      {[1, 2, 4].map((s) => (
+                        <button
+                          key={`speed-${s}`}
+                          type="button"
+                          onClick={() => setAutoSpeedMultiplier(s)}
+                          className={`rounded border px-2 py-0.5 ${autoSpeedMultiplier === s ? 'border-black/70 bg-black text-white' : 'border-black/40 bg-white text-[#374151]'}`}
+                        >
+                          x{s}
+                        </button>
                       ))}
-                      <span className="mx-1 text-gray-600">|</span>
-                      <button type="button" onClick={() => setIsAutoPaused(!isAutoPaused)} className="text-gray-300 hover:text-white uppercase transition">{isAutoPaused ? '▶ Play' : '⏸ Pause'}</button>
-                      <button type="button" onClick={onSkip} className="text-gray-500 hover:text-gray-300 ml-2">Skip</button>
-                    </div>
-                  )}
-                  {isFinished && (
-                    <button type="button" onClick={onFinish} className="bg-[#c8aa6e] text-black px-3 py-1 rounded text-[10px] font-bold uppercase hover:bg-yellow-500 transition">Resultats</button>
+                      <button
+                        type="button"
+                        onClick={() => setIsAutoPaused(!isAutoPaused)}
+                        className="rounded border border-black/40 bg-white px-2 py-0.5 text-[#374151]"
+                      >
+                        {isAutoPaused ? 'Play' : 'Pause'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={onSkip}
+                        className="rounded border border-black/40 bg-white px-2 py-0.5 text-[#374151]"
+                      >
+                        Skip
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={onFinish}
+                      className="rounded border border-black/70 bg-black px-2.5 py-0.5 text-white"
+                    >
+                      Resultats
+                    </button>
                   )}
                 </div>
               </div>
 
-              <div className="flex flex-col-reverse gap-1.5 text-sm">
+              <div className="mt-3 grid gap-1.5 text-sm">
                 {recentComments.map((event, idx) => (
-                  <div key={'evt-'+event.minute} className={`flex gap-3 items-start ${idx === 0 ? 'text-white' : 'text-gray-500'}`}>
-                    <span className={`font-mono text-xs w-8 text-right shrink-0 mt-0.5 ${idx === 0 ? 'text-[#c8aa6e]' : 'text-gray-600'}`}>{event.minute}'</span>
-                    <span className={idx === 0 ? 'font-medium' : ''}>{event.commentary}</span>
+                  <div key={`evt-${event.minute}-${idx}`} className={`flex items-start gap-3 ${idx === 0 ? 'text-[#111827]' : 'text-[#6b7280]'}`}>
+                    <span className="w-9 shrink-0 text-right font-mono text-xs">{event.minute}'</span>
+                    <span className="text-xs sm:text-sm">{event.commentary}</span>
                   </div>
                 ))}
               </div>
@@ -5431,21 +5436,21 @@ function MatchLivePage({
           </div>
 
           {pendingDecision ? (
-            <div className="pointer-events-auto absolute inset-0 z-20 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-              <div className="w-full max-w-md rounded-lg border border-[#c8aa6e]/60 bg-[#0a0a0c] p-5 shadow-2xl">
-                <p className="text-[10px] uppercase tracking-[0.12em] text-[#c8aa6e]">Decision Coach - Minute {pendingDecision.minute}</p>
-                <h3 className="mt-1 text-lg font-bold uppercase tracking-[0.06em] text-white">{pendingDecision.title}</h3>
-                <p className="mt-2 text-sm text-gray-300">{pendingDecision.question}</p>
+            <div className="pointer-events-auto absolute inset-0 z-20 flex items-center justify-center bg-black/45 backdrop-blur-sm">
+              <div className="w-full max-w-md rounded-xl border-2 border-black/70 bg-white p-5 shadow-2xl">
+                <p className="text-[10px] uppercase tracking-[0.12em] text-[#374151]">Decision Coach - Minute {pendingDecision.minute}</p>
+                <h3 className="mt-1 text-lg font-bold uppercase tracking-[0.06em] text-[#111827]">{pendingDecision.title}</h3>
+                <p className="mt-2 text-sm text-[#374151]">{pendingDecision.question}</p>
                 <div className="mt-4 flex flex-col gap-2">
                   {pendingDecision.options.map((option) => (
                     <button
                       key={option.id}
                       type="button"
                       onClick={() => onResolveDecision && onResolveDecision(pendingDecision.id, option)}
-                      className="flex flex-col items-start rounded border border-gray-700 bg-gray-900/80 px-3 py-2 text-left transition hover:border-[#c8aa6e] hover:bg-gray-800"
+                      className="flex flex-col items-start rounded-lg border border-black/35 bg-white px-3 py-2 text-left transition hover:border-black/65"
                     >
-                      <span className="text-sm font-semibold text-white">{option.label}</span>
-                      <span className="mt-0.5 text-[11px] text-gray-400">{option.commentary}</span>
+                      <span className="text-sm font-semibold text-[#111827]">{option.label}</span>
+                      <span className="mt-0.5 text-[11px] text-[#4b5563]">{option.commentary}</span>
                     </button>
                   ))}
                 </div>
@@ -5454,57 +5459,19 @@ function MatchLivePage({
           ) : null}
         </div>
 
-        {/* Right Sidebar - Red Team Stats */}
-        <div className="relative z-10 flex w-[320px] shrink-0 flex-col border-l border-gray-800/60 bg-gradient-to-l from-[#1a0505]/80 to-transparent p-4">
-          <div className="flex flex-1 flex-col justify-around gap-2">
+        <div className="flex min-h-0 flex-col gap-3">
+          <div className="mx-auto h-12 w-12 rotate-45 rounded-xl border-2 border-black/75 bg-white/75" />
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
             {enemyLiveRows.map((row) => (
-              <div key={`red-${row.role}`} className="flex flex-col gap-1 rounded-sm border-r-2 border-red-500 bg-red-950/20 p-2 shadow backdrop-blur-sm text-right">
-                <div className="flex items-end justify-between flex-row-reverse">
-                  <span className="text-xs font-bold uppercase tracking-wider text-red-200">{row.playerName}</span>
-                  <span className="text-[10px] uppercase text-red-400/80">{row.role}</span>
-                </div>
-                <div className="flex items-center justify-between flex-row-reverse text-sm">
-                  <div className="font-semibold text-white">{row.championName}</div>
-                  <div className="flex gap-3 text-xs font-mono text-gray-300 flex-row-reverse">
-                    <span className="text-white">{row.kills} K</span>
-                    <span>{row.farm} CS</span>
-                  </div>
-                </div>
-                <div className="mt-1 flex items-center justify-end gap-1">
-                  {row.items.length ? row.items.map((itemName, index) => {
-                    const itemImageUrl = getItemImageUrl(itemName)
-
-                    if (!itemImageUrl) {
-                      return (
-                        <span
-                          key={`${row.role}-item-fallback-${index}`}
-                          className="flex h-5 w-5 items-center justify-center rounded border border-[var(--border-soft)] bg-black/40 text-[9px] font-bold uppercase text-gray-300"
-                          title={itemName}
-                        >
-                          {itemName.slice(0, 2)}
-                        </span>
-                      )
-                    }
-
-                    return (
-                      <img
-                        key={`${row.role}-item-${itemName}-${index}`}
-                        src={itemImageUrl}
-                        alt={itemName}
-                        title={itemName}
-                        className="h-5 w-5 rounded border border-[var(--border-soft)] bg-black/30 object-cover"
-                        loading="lazy"
-                      />
-                    )
-                  }) : (
-                    <span className="text-[10px] text-gray-500">-</span>
-                  )}
-                </div>
+              <div key={`red-${row.role}`} className="rounded-2xl border-2 border-black/70 bg-white/85 px-4 py-3 text-right shadow-sm">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#b91c1c]">{row.role}</p>
+                <p className="mt-1 truncate text-sm font-bold text-[#111827]">{row.playerName}</p>
+                <p className="truncate text-xs text-[#374151]">{row.championName}</p>
+                <p className="mt-1 text-[11px] font-mono text-[#4b5563]">{row.kills}K · {row.farm}CS</p>
               </div>
             ))}
           </div>
         </div>
-
       </div>
     </div>
   )
